@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 from .csv_runtime_db import rebuild_runtime_db
 from .db import SQLitePartsRepository
 from .graph import RigForgeGraph
-from .schemas import BuildPlan, ChatRequest
+from .schemas import ChatRequest
 from .service import ChatService
 from .tools import Toolset, pick_build_from_candidates
 
@@ -90,24 +90,7 @@ def _build_graph_service(repo: SQLitePartsRepository, mode: BuildDataMode) -> Ch
     )
 
 
-def _build_has_any_part(build: BuildPlan) -> bool:
-    return any(
-        [
-            build.cpu is not None,
-            build.motherboard is not None,
-            build.memory is not None,
-            build.storage is not None,
-            build.gpu is not None,
-            build.psu is not None,
-            build.case is not None,
-            build.cooler is not None,
-        ]
-    )
-
-
 def _live_preview_build(mode: BuildDataMode, result) -> None:
-    if _build_has_any_part(result.build):
-        return
     graph = services[mode].graph
     preview = pick_build_from_candidates(result.requirements, graph.tool_map["search_parts"])
     result.build = preview

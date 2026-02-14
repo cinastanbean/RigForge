@@ -65,14 +65,32 @@ class Toolset:
             """Search parts by category and budget, sorted by performance score."""
             prefer_brands = prefer_brands or []
             exclude_brands = exclude_brands or []
+
+            def _norm(value: str) -> str:
+                return value.strip().lower()
+
+            def _brand_matches(part: Part, brand_norm: str) -> bool:
+                if not brand_norm:
+                    return False
+                part_brand = _norm(part.brand)
+                part_name = _norm(part.name)
+                return part_brand == brand_norm or f" {brand_norm} " in f" {part_name} "
+
+            prefer_brands_norm = {_norm(b) for b in prefer_brands if b and b.strip()}
+            exclude_brands_norm = {_norm(b) for b in exclude_brands if b and b.strip()}
             candidates = [
                 p
                 for p in repo.by_category(category)
-                if p.price <= budget_max and p.brand not in exclude_brands
+                if p.price <= budget_max
+                and not any(_brand_matches(p, blocked) for blocked in exclude_brands_norm)
             ]
-            if prefer_brands:
+            if prefer_brands_norm:
                 candidates.sort(
-                    key=lambda p: (p.brand not in prefer_brands, -p.score, p.price)
+                    key=lambda p: (
+                        not any(_brand_matches(p, preferred) for preferred in prefer_brands_norm),
+                        -p.score,
+                        p.price,
+                    )
                 )
             else:
                 candidates.sort(key=lambda p: (-p.score, p.price))
@@ -183,28 +201,65 @@ def pick_build_from_candidates(
     build = BuildPlan()
 
     def choose(category: str, predicate=None, strict_predicate: bool = False) -> Part | None:
+        def _norm(value: str) -> str:
+            return value.strip().lower()
+
+        def _brand_matches(item: Part, brand: str) -> bool:
+            brand_norm = _norm(brand)
+            if not brand_norm:
+                return False
+            return _norm(item.brand) == brand_norm or f" {brand_norm} " in f" {_norm(item.name)} "
+
+        def _has_preferred_brand(raw_items: List[dict], preferred: str) -> bool:
+            items_local = [Part.model_validate(item) for item in raw_items]
+            return any(_brand_matches(item, preferred) for item in items_local)
+
         is_fallback = False
+        category_prefer_brands = list(req.prefer_brands)
+        category_exclude_brands = list(req.brand_blacklist)
+        cpu_preference = (req.cpu_preference or "").strip()
+        if category == "cpu" and cpu_preference:
+            # Explicit CPU preference should be stronger than generic brand history.
+            category_prefer_brands = [cpu_preference]
+            category_exclude_brands = [
+                b for b in category_exclude_brands if b.strip().lower() != cpu_preference.lower()
+            ]
         raw = search_parts_tool.invoke(
             {
                 "category": category,
                 "budget_max": max(budgets[category], 200),
-                "prefer_brands": req.prefer_brands,
-                "exclude_brands": req.brand_blacklist,
+                "prefer_brands": category_prefer_brands,
+                "exclude_brands": category_exclude_brands,
             }
         )
-        if not raw:
+        should_expand_budget = (
+            category == "cpu"
+            and bool(cpu_preference)
+            and raw
+            and not _has_preferred_brand(raw, cpu_preference)
+        )
+        if not raw or should_expand_budget:
             is_fallback = True
             raw = search_parts_tool.invoke(
                 {
                     "category": category,
                     "budget_max": max(req.budget_max, 200),
-                    "prefer_brands": req.prefer_brands,
-                    "exclude_brands": req.brand_blacklist,
+                    "prefer_brands": category_prefer_brands,
+                    "exclude_brands": category_exclude_brands,
                 }
             )
         if not raw:
             return None
         items = [Part.model_validate(item) for item in raw]
+        if category == "cpu" and cpu_preference:
+            matched_cpu_brand = [
+                item for item in items if _brand_matches(item, cpu_preference)
+            ]
+            if matched_cpu_brand:
+                items = matched_cpu_brand
+            else:
+                # Do not silently violate an explicit CPU brand preference.
+                return None
         if req.priority == "budget" or is_fallback:
             items.sort(key=lambda p: p.price)
         elif req.priority == "performance":

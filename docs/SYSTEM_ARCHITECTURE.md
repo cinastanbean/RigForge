@@ -25,6 +25,12 @@ flowchart LR
 
 说明：服务启动时由两份 CSV 重建运行数据库，运行阶段只读该数据库。前端布局为左侧需求画像、中间聊天、右侧推荐与风险。
 
+前端渲染说明：
+1. 前端是原生 HTML/CSS/JavaScript 静态页面，不依赖 React/Vue 或 SSR 模板引擎。
+2. `GET /` 由 FastAPI 直接返回 `frontend/index.html`。
+3. `app.mount("/static", StaticFiles(directory=FRONTEND_DIR), name="static")` 提供 `frontend/styles.css` 与 `frontend/app.js`。
+4. 页面交互由 `frontend/app.js` 负责，通过 `POST /api/chat` 拉取结果后更新 DOM，实现客户端渲染（CSR）。
+
 ## 3. 模块职责
 
 1. `src/rigforge/main.py`
@@ -48,6 +54,7 @@ flowchart LR
 7. `frontend/`
 - 聊天与配置展示。
 - 三栏布局：需求画像 / 聊天窗口 / 推荐与风险。
+- `index.html` 定义页面骨架，`styles.css` 负责样式，`app.js` 负责状态更新与 API 调用。
 
 ## 4. 关键流程
 

@@ -26,6 +26,37 @@ _AUTO_LLM = object()
 _PROVIDER_FAIL_UNTIL: Dict[str, float] = {"zhipu": 0.0, "openrouter": 0.0}
 
 
+_BRAND_CANON = {
+    "intel": "Intel",
+    "amd": "AMD",
+    "nvidia": "NVIDIA",
+}
+
+
+def _canon_brand(value: str) -> str:
+    key = value.strip().lower()
+    return _BRAND_CANON.get(key, value.strip())
+
+
+def _canon_brand_list(values: List[str] | None) -> List[str] | None:
+    if values is None:
+        return None
+    out: List[str] = []
+    seen = set()
+    for raw in values:
+        if raw is None:
+            continue
+        item = _canon_brand(str(raw))
+        if not item:
+            continue
+        token = item.lower()
+        if token in seen:
+            continue
+        seen.add(token)
+        out.append(item)
+    return out
+
+
 def build_llm(provider: Literal["zhipu", "openrouter", "openai"], temperature: float):
     timeout_seconds = float(os.getenv("LLM_TIMEOUT_SECONDS", "12"))
     max_retries = int(os.getenv("LLM_MAX_RETRIES", "0"))
@@ -343,6 +374,10 @@ def merge_requirements(current: UserRequirements, update: RequirementUpdate) -> 
             continue
         if value is not None:
             payload[key] = value
+    if payload.get("cpu_preference"):
+        payload["cpu_preference"] = _canon_brand(payload["cpu_preference"])
+    payload["prefer_brands"] = _canon_brand_list(payload.get("prefer_brands")) or []
+    payload["brand_blacklist"] = _canon_brand_list(payload.get("brand_blacklist")) or []
     return UserRequirements.model_validate(payload)
 
 
@@ -1020,6 +1055,10 @@ class RigForgeGraph:
     @staticmethod
     def _apply_keyword_guards(update: RequirementUpdate, text: str) -> RequirementUpdate:
         lower = text.lower()
+        if "intel" in lower:
+            update.cpu_preference = "Intel"
+        elif "amd" in lower:
+            update.cpu_preference = "AMD"
         if any(
             k in text
             for k in [

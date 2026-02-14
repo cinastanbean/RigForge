@@ -6,6 +6,7 @@
 
 - `REQUIREMENTS_DESIGN.md`：需求设计
 - `SYSTEM_ARCHITECTURE.md`：系统架构与模块职责
+  - 包含前端渲染方式说明（FastAPI 静态托管 + 浏览器端 CSR）
 - `DATA_INPUT_CONTRACT.md`：运行时数据输入契约
 
 ## Project Records
@@ -21,4 +22,3 @@
 - 优先使用列表与表格表达规则
 - 路径统一使用相对路径
 - 不记录本机隐私信息（账号、绝对路径、密钥）
-

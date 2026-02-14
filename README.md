@@ -23,6 +23,12 @@ RigForge 是一个面向 PC 装机咨询的对话式 Agent，基于 `LangChain +
 - 中栏：聊天窗口
 - 右栏：推荐配置 + 风险与估算
 
+## Frontend Rendering
+
+- 当前前端采用原生静态页面方案，不使用 React/Vue 等前端框架。
+- 后端通过 FastAPI 返回 `frontend/index.html`，并将 `frontend/` 目录挂载为 `/static` 提供静态资源。
+- 浏览器端由 `frontend/app.js` 通过 `fetch('/api/chat')` 调用接口，并用 DOM 更新三栏内容（需求画像、聊天、推荐与风险）。
+
 ## Project Structure
 
 ```text
@@ -105,4 +111,3 @@ pytest -q
 
 - 文档导航：`docs/README.md`
 - 快速启动：`FAST_START.md`
-

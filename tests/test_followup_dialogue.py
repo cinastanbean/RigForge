@@ -178,3 +178,27 @@ def test_numeric_budget_reply_after_budget_question_is_applied():
     assert second.requirements.budget_max == 9000
     assert second.requirements.budget_min == int(9000 * 0.85)
     assert "预算范围" not in second.reply
+
+
+def test_cpu_preference_intel_is_applied_to_cpu_selection():
+    repo = PartsRepository(ROOT / "data" / "parts.json")
+    graph = RigForgeGraph(Toolset(repo))
+    graph.llm = None
+
+    out = graph.invoke("预算10000，2K游戏，不需要显示器，1TB，静音，Intel")
+
+    assert out.requirements.cpu_preference == "Intel"
+    assert out.build.cpu is not None
+    assert out.build.cpu.brand.lower() == "intel"
+
+
+def test_cpu_preference_lowercase_intel_is_normalized_and_applied():
+    repo = PartsRepository(ROOT / "data" / "parts.json")
+    graph = RigForgeGraph(Toolset(repo))
+    graph.llm = None
+
+    out = graph.invoke("预算10000，2K游戏，不需要显示器，1TB，静音，intel")
+
+    assert out.requirements.cpu_preference == "Intel"
+    assert out.build.cpu is not None
+    assert out.build.cpu.brand.lower() == "intel"
