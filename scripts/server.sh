@@ -6,8 +6,8 @@ APP_MODULE="rigforge.main:app"
 HOST="${HOST:-127.0.0.1}"
 PORT="${PORT:-8000}"
 PYTHONPATH_VALUE="${PYTHONPATH_VALUE:-src}"
-LOG_FILE="${LOG_FILE:-/tmp/cx-langgraph-uvicorn.log}"
-PID_FILE="${PID_FILE:-/tmp/cx-langgraph-uvicorn.pid}"
+LOG_FILE="${LOG_FILE:-/tmp/rigforge-uvicorn.log}"
+PID_FILE="${PID_FILE:-/tmp/rigforge-uvicorn.pid}"
 MODE="${MODE:-bg}" # fg|bg
 
 usage() {
