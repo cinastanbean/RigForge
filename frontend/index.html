@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>RigForge｜锐格锻造坊</title>
+    <link rel="icon" href="/favicon.ico" sizes="any" />
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <main class="layout">
+      <aside class="requirements-panel">
+        <h2>需求画像</h2>
+        <div id="requirements" class="card"></div>
+      </aside>
+
+      <section class="chat-panel">
+        <header>
+          <h1>RigForge｜锐格锻造坊 装机顾问</h1>
+          <p>告诉我预算、用途和偏好，我会实时生成新机配置方案。</p>
+        </header>
+        <div id="chatBox" class="chat-box"></div>
+        <form id="chatForm" class="chat-form">
+          <select id="enthusiasmLevel" aria-label="热情度档位">
+            <option value="standard" selected>标准互动</option>
+            <option value="high">高互动</option>
+          </select>
+          <select id="buildDataMode" aria-label="推荐数据源模式">
+            <option value="newegg" selected>仅 Newegg</option>
+            <option value="jd">仅京东</option>
+            <option value="jd_newegg">京东 + Newegg</option>
+          </select>
+          <input id="messageInput" type="text" placeholder="例如：预算1万，2K游戏，尽量静音，优先NVIDIA" required />
+          <button type="submit">发送</button>
+        </form>
+      </section>
+
+      <aside class="state-panel">
+        <h2>推荐与风险</h2>
+        <div id="build" class="card"></div>
+        <div id="risks" class="card"></div>
+      </aside>
+    </main>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>

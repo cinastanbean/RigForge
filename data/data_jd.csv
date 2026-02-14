@@ -1,0 +1,71 @@
+sku,name,category,brand,price,price_usd,socket,tdp,score,vram,length_mm,height_mm,watt,memory_type,form_factor,capacity_gb,efficiency,source_site,source_url,item_sku,cpu_socket,mb_socket,mb_form_factor,gpu_length_mm,case_max_gpu_length_mm,case_max_cpu_cooler_height_mm,monitor_resolution,monitor_refresh_hz,storage_interface,storage_form_factor,pcie_version,specs_json
+jd-case-100789012,YOGO M2,case,爱国者,199,,,0,70,0,0,0,0,,mATX,0,,jd,https://item.jd.com/100789012.html,100789012,,,,0,0,0,,,,,,"{""form_factor"": ""M-ATX""}"
+jd-case-100789013,O11 Dynamic,case,联力,699,,,0,70,0,0,0,0,,ATX,0,,jd,https://item.jd.com/100789013.html,100789013,,,,0,0,0,,,,,,"{""form_factor"": ""ATX""}"
+jd-case-100789014,Lancool II 205 Mesh,case,联力,599,,,0,70,0,0,0,0,,ATX,0,,jd,https://item.jd.com/100789014.html,100789014,,,,0,0,0,,,,,,"{""form_factor"": ""ATX""}"
+jd-case-100789015,平头哥M1,case,先马,159,,,0,70,0,0,0,0,,mATX,0,,jd,https://item.jd.com/100789015.html,100789015,,,,0,0,0,,,,,,"{""form_factor"": ""M-ATX""}"
+jd-case-100789016,Lancool III,case,联力,999,,,0,70,0,0,0,0,,ATX,0,,jd,https://item.jd.com/100789016.html,100789016,,,,0,0,0,,,,,,"{""form_factor"": ""ATX""}"
+jd-case-5074d8a9013678db,YOGO M2,case,爱国者,199,,,0,70,0,0,0,0,,ATX,0,,jd,,,,,,0,0,0,,,,,,{}
+jd-case-7f981575e9c2570a,Lancool II 205 Mesh,case,联力,599,,,0,70,0,0,0,0,,ATX,0,,jd,,,,,,0,0,0,,,,,,{}
+jd-case-951a6fcfb6c5539e,Lancool III,case,联力,999,,,0,70,0,0,0,0,,ATX,0,,jd,,,,,,0,0,0,,,,,,{}
+jd-case-95e8cd087768968c,平头哥M1,case,先马,159,,,0,70,0,0,0,0,,ATX,0,,jd,,,,,,0,0,0,,,,,,{}
+jd-case-f14c82de045d4308,O11 Dynamic,case,联力,699,,,0,70,0,0,0,0,,ATX,0,,jd,,,,,,0,0,0,,,,,,{}
+jd-cpu-00a0b033f5277f4f,i5-13400F,cpu,Intel,1499,,LGA1700,0,70,0,0,0,0,,,0,,jd,,,LGA1700,,,0,0,0,,,,,,{}
+jd-cpu-100123456,i5-13400F,cpu,Intel,1499,,LGA1700,0,70,0,0,0,0,,,0,,jd,https://item.jd.com/100123456.html,100123456,LGA1700,,,0,0,0,,,,,,"{""cores"": 10, ""threads"": 16}"
+jd-cpu-100123457,i7-14700K,cpu,Intel,3199,,LGA1700,0,70,0,0,0,0,,,0,,jd,https://item.jd.com/100123457.html,100123457,LGA1700,,,0,0,0,,,,,,"{""cores"": 20, ""threads"": 28}"
+jd-cpu-100123458,R7-7800X3D,cpu,AMD,3199,,AM5,0,70,0,0,0,0,,,0,,jd,https://item.jd.com/100123458.html,100123458,AM5,,,0,0,0,,,,,,"{""cores"": 8, ""threads"": 16}"
+jd-cpu-100123459,i5-12400F,cpu,Intel,999,,LGA1700,0,70,0,0,0,0,,,0,,jd,https://item.jd.com/100123459.html,100123459,LGA1700,,,0,0,0,,,,,,"{""cores"": 6, ""threads"": 12}"
+jd-cpu-100123460,i9-14900K,cpu,Intel,4599,,LGA1700,0,70,0,0,0,0,,,0,,jd,https://item.jd.com/100123460.html,100123460,LGA1700,,,0,0,0,,,,,,"{""cores"": 24, ""threads"": 32}"
+jd-cpu-697e55f6f4737b24,i9-14900K,cpu,Intel,4599,,LGA1700,0,70,0,0,0,0,,,0,,jd,,,LGA1700,,,0,0,0,,,,,,{}
+jd-cpu-c38ad766554a9735,i5-12400F,cpu,Intel,999,,LGA1700,0,70,0,0,0,0,,,0,,jd,,,LGA1700,,,0,0,0,,,,,,{}
+jd-cpu-d8287a24bc4e5871,R7-7800X3D,cpu,AMD,3199,,AM5,0,70,0,0,0,0,,,0,,jd,,,AM5,,,0,0,0,,,,,,{}
+jd-cpu-db48877b73b84d3c,i7-14700K,cpu,Intel,3199,,LGA1700,0,70,0,0,0,0,,,0,,jd,,,LGA1700,,,0,0,0,,,,,,{}
+jd-gpu-100234567,RTX 4060 Ti,gpu,NVIDIA,3199,,,0,70,0,0,0,0,,,0,,jd,https://item.jd.com/100234567.html,100234567,,,,0,0,0,,,,,,"{""vram"": 8}"
+jd-gpu-100234568,RTX 4070 Super,gpu,NVIDIA,4799,,,0,70,0,0,0,0,,,0,,jd,https://item.jd.com/100234568.html,100234568,,,,0,0,0,,,,,,"{""vram"": 12}"
+jd-gpu-100234569,RX 7900 XT,gpu,AMD,7399,,,0,70,0,0,0,0,,,0,,jd,https://item.jd.com/100234569.html,100234569,,,,0,0,0,,,,,,"{""vram"": 20}"
+jd-gpu-100234570,RX 6600,gpu,AMD,1599,,,0,70,0,0,0,0,,,0,,jd,https://item.jd.com/100234570.html,100234570,,,,0,0,0,,,,,,"{""vram"": 8}"
+jd-gpu-100234571,RTX 4090,gpu,NVIDIA,12999,,,0,70,0,0,0,0,,,0,,jd,https://item.jd.com/100234571.html,100234571,,,,0,0,0,,,,,,"{""vram"": 24}"
+jd-gpu-3967f0c810978be2,RX 6600,gpu,AMD,1599,,,0,70,0,0,0,0,,,0,,jd,,,,,,0,0,0,,,,,,{}
+jd-gpu-6a120463594ced2d,RX 7900 XT,gpu,AMD,7399,,,0,70,0,0,0,0,,,0,,jd,,,,,,0,0,0,,,,,,{}
+jd-gpu-705bbd831167ca9a,RTX 4060 Ti,gpu,NVIDIA,3199,,,0,70,0,0,0,0,,,0,,jd,,,,,,0,0,0,,,,,,{}
+jd-gpu-dbf6bd3baffcad10,RTX 4070 Super,gpu,NVIDIA,4799,,,0,70,0,0,0,0,,,0,,jd,,,,,,0,0,0,,,,,,{}
+jd-gpu-ec0b4aa215e5d48e,RTX 4090,gpu,NVIDIA,12999,,,0,70,0,0,0,0,,,0,,jd,,,,,,0,0,0,,,,,,{}
+jd-memory-100456789,Fury Beast 16GB DDR5 4800,memory,金士顿,449,,,0,70,0,0,0,0,DDR5,,16,,jd,https://item.jd.com/100456789.html,100456789,,,,0,0,0,,,,,,"{""capacity"": 16, ""type"": ""DDR5""}"
+jd-memory-100456790,Vengeance 32GB DDR5 6000,memory,海盗船,999,,,0,70,0,0,0,0,DDR5,,32,,jd,https://item.jd.com/100456790.html,100456790,,,,0,0,0,,,,,,"{""capacity"": 32, ""type"": ""DDR5""}"
+jd-memory-100456791,Trident Z5 32GB DDR5 6000,memory,芝奇,899,,,0,70,0,0,0,0,DDR5,,32,,jd,https://item.jd.com/100456791.html,100456791,,,,0,0,0,,,,,,"{""capacity"": 32, ""type"": ""DDR5""}"
+jd-memory-100456792,Fury Beast 16GB DDR4 3200,memory,金士顿,249,,,0,70,0,0,0,0,DDR4,,16,,jd,https://item.jd.com/100456792.html,100456792,,,,0,0,0,,,,,,"{""capacity"": 16, ""type"": ""DDR4""}"
+jd-memory-100456793,Vengeance 64GB DDR5 6400,memory,海盗船,1999,,,0,70,0,0,0,0,DDR5,,64,,jd,https://item.jd.com/100456793.html,100456793,,,,0,0,0,,,,,,"{""capacity"": 64, ""type"": ""DDR5""}"
+jd-memory-28cc3e89c5b98137,Fury Beast 16GB DDR5 4800,memory,金士顿,449,,,0,70,0,0,0,0,DDR5,,16,,jd,,,,,,0,0,0,,,,,,{}
+jd-memory-7aa9cfad28a9910f,Fury Beast 16GB DDR4 3200,memory,金士顿,249,,,0,70,0,0,0,0,DDR4,,16,,jd,,,,,,0,0,0,,,,,,{}
+jd-memory-87a1a98ef2e08c2f,Trident Z5 32GB DDR5 6000,memory,芝奇,899,,,0,70,0,0,0,0,DDR5,,32,,jd,,,,,,0,0,0,,,,,,{}
+jd-memory-ba13d829b2db4d56,Vengeance 64GB DDR5 6400,memory,海盗船,1999,,,0,70,0,0,0,0,DDR5,,64,,jd,,,,,,0,0,0,,,,,,{}
+jd-memory-d9efd4a719719ceb,Vengeance 32GB DDR5 6000,memory,海盗船,999,,,0,70,0,0,0,0,DDR5,,32,,jd,,,,,,0,0,0,,,,,,{}
+jd-motherboard-100345678,B760M BOMBER WIFI,motherboard,微星,899,,LGA1700,0,70,0,0,0,0,,,0,,jd,https://item.jd.com/100345678.html,100345678,,LGA1700,,0,0,0,,,,,,"{""socket"": ""LGA1700""}"
+jd-motherboard-100345679,Z790-P,motherboard,华硕,1599,,LGA1700,0,70,0,0,0,0,,,0,,jd,https://item.jd.com/100345679.html,100345679,,LGA1700,,0,0,0,,,,,,"{""socket"": ""LGA1700""}"
+jd-motherboard-100345680,B650M MORTAR WIFI,motherboard,微星,1299,,AM5,0,70,0,0,0,0,,,0,,jd,https://item.jd.com/100345680.html,100345680,,AM5,,0,0,0,,,,,,"{""socket"": ""AM5""}"
+jd-motherboard-100345681,H610M S2H,motherboard,技嘉,599,,LGA1700,0,70,0,0,0,0,,,0,,jd,https://item.jd.com/100345681.html,100345681,,LGA1700,,0,0,0,,,,,,"{""socket"": ""LGA1700""}"
+jd-motherboard-100345682,Z790-E,motherboard,华硕,2599,,LGA1700,0,70,0,0,0,0,,,0,,jd,https://item.jd.com/100345682.html,100345682,,LGA1700,,0,0,0,,,,,,"{""socket"": ""LGA1700""}"
+jd-motherboard-19b31bdbae7c0a54,Z790-P,motherboard,华硕,1599,,LGA1700,0,70,0,0,0,0,,,0,,jd,,,,LGA1700,,0,0,0,,,,,,{}
+jd-motherboard-5a7ff9925a1ccd5e,H610M S2H,motherboard,技嘉,599,,LGA1700,0,70,0,0,0,0,,,0,,jd,,,,LGA1700,,0,0,0,,,,,,{}
+jd-motherboard-8cd2d3e9f0dc4283,Z790-E,motherboard,华硕,2599,,LGA1700,0,70,0,0,0,0,,,0,,jd,,,,LGA1700,,0,0,0,,,,,,{}
+jd-motherboard-a2240f36b5e79424,B760M BOMBER WIFI,motherboard,微星,899,,LGA1700,0,70,0,0,0,0,,,0,,jd,,,,LGA1700,,0,0,0,,,,,,{}
+jd-motherboard-b1b7c2a87e3a0518,B650M MORTAR WIFI,motherboard,微星,1299,,AM5,0,70,0,0,0,0,,,0,,jd,,,,AM5,,0,0,0,,,,,,{}
+jd-psu-0a8b593e02374445,X6 650W,psu,长城,399,,,0,70,0,0,0,650,,,0,,jd,,,,,,0,0,0,,,,,,{}
+jd-psu-100678901,X6 650W,psu,长城,399,,,0,70,0,0,0,650,,,0,,jd,https://item.jd.com/100678901.html,100678901,,,,0,0,0,,,,,,"{""wattage"": 650}"
+jd-psu-100678902,RM750,psu,海盗船,749,,,0,70,0,0,0,750,,,0,,jd,https://item.jd.com/100678902.html,100678902,,,,0,0,0,,,,,,"{""wattage"": 750}"
+jd-psu-100678903,V750,psu,酷冷至尊,799,,,0,70,0,0,0,750,,,0,,jd,https://item.jd.com/100678903.html,100678903,,,,0,0,0,,,,,,"{""wattage"": 750}"
+jd-psu-100678904,黑钻 650W,psu,先马,299,,,0,70,0,0,0,650,,,0,,jd,https://item.jd.com/100678904.html,100678904,,,,0,0,0,,,,,,"{""wattage"": 650}"
+jd-psu-100678905,RM1000x,psu,海盗船,1299,,,0,70,0,0,0,1000,,,0,,jd,https://item.jd.com/100678905.html,100678905,,,,0,0,0,,,,,,"{""wattage"": 1000}"
+jd-psu-1dd8f65bae183528,RM1000x,psu,海盗船,1299,,,0,70,0,0,0,0,,,0,,jd,,,,,,0,0,0,,,,,,{}
+jd-psu-6e1fe365ad406eb5,RM750,psu,海盗船,749,,,0,70,0,0,0,0,,,0,,jd,,,,,,0,0,0,,,,,,{}
+jd-psu-ed82eee4f14a2589,V750,psu,酷冷至尊,799,,,0,70,0,0,0,0,,,0,,jd,,,,,,0,0,0,,,,,,{}
+jd-psu-f771202de63d5eff,黑钻 650W,psu,先马,299,,,0,70,0,0,0,650,,,0,,jd,,,,,,0,0,0,,,,,,{}
+jd-storage-100567890,TiPlus 7100 512GB,storage,致态,399,,,0,70,0,0,0,0,,,512,,jd,https://item.jd.com/100567890.html,100567890,,,,0,0,0,,,,,,"{""capacity"": 512, ""type"": ""NVMe""}"
+jd-storage-100567891,980 Pro 1TB,storage,三星,799,,,0,70,0,0,0,0,,,1024,,jd,https://item.jd.com/100567891.html,100567891,,,,0,0,0,,,,,,"{""capacity"": 1024, ""type"": ""NVMe""}"
+jd-storage-100567892,SN850X 1TB,storage,西部数据,849,,,0,70,0,0,0,0,,,1024,,jd,https://item.jd.com/100567892.html,100567892,,,,0,0,0,,,,,,"{""capacity"": 1024, ""type"": ""NVMe""}"
+jd-storage-100567893,RC20 500GB,storage,铠侠,299,,,0,70,0,0,0,0,,,500,,jd,https://item.jd.com/100567893.html,100567893,,,,0,0,0,,,,,,"{""capacity"": 500, ""type"": ""NVMe""}"
+jd-storage-100567894,SN850X 2TB,storage,西部数据,1499,,,0,70,0,0,0,0,,,2048,,jd,https://item.jd.com/100567894.html,100567894,,,,0,0,0,,,,,,"{""capacity"": 2048, ""type"": ""NVMe""}"
+jd-storage-5b8968b45cc69c12,SN850X 1TB,storage,西部数据,849,,,0,70,0,0,0,0,,,1024,,jd,,,,,,0,0,0,,,,,,{}
+jd-storage-aa48f421bb311dc4,SN850X 2TB,storage,西部数据,1499,,,0,70,0,0,0,0,,,2048,,jd,,,,,,0,0,0,,,,,,{}
+jd-storage-ce67c75201052967,980 Pro 1TB,storage,三星,799,,,0,70,0,0,0,0,,,1024,,jd,,,,,,0,0,0,,,,,,{}
+jd-storage-ef7e916a6a84285a,TiPlus 7100 512GB,storage,致态,399,,,0,70,0,0,0,0,,,512,,jd,,,,,,0,0,0,,,,,,{}
+jd-storage-fd9d089495fdd897,RC20 500GB,storage,铠侠,299,,,0,70,0,0,0,0,,,500,,jd,,,,,,0,0,0,,,,,,{}

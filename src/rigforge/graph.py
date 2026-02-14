@@ -1,0 +1,1181 @@
+from __future__ import annotations
+
+import os
+import re
+import threading
+import time
+import json
+import hashlib
+from copy import deepcopy
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+from pathlib import Path
+from typing import Annotated, Dict, List, Literal, Optional, TypedDict
+
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_openai import ChatOpenAI
+from langgraph.graph import END, StateGraph
+from langgraph.graph.message import add_messages
+
+from .schemas import BuildPlan, ChatResponse, RequirementUpdate, UserRequirements
+from .tools import Toolset, pick_build_from_candidates
+
+_LLM_CALL_LOCK = threading.Lock()
+_LAST_LLM_CALL_AT = 0.0
+_AUTO_LLM = object()
+_PROVIDER_FAIL_UNTIL: Dict[str, float] = {"zhipu": 0.0, "openrouter": 0.0}
+
+
+def build_llm(provider: Literal["zhipu", "openrouter", "openai"], temperature: float):
+    timeout_seconds = float(os.getenv("LLM_TIMEOUT_SECONDS", "12"))
+    max_retries = int(os.getenv("LLM_MAX_RETRIES", "0"))
+
+    if provider == "openrouter":
+        openrouter_key = os.getenv("OPENROUTER_API_KEY")
+        if not openrouter_key:
+            return None
+        model = os.getenv("OPENROUTER_MODEL", "openrouter/free")
+        base_url = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+        return ChatOpenAI(
+            model=model,
+            temperature=temperature,
+            api_key=openrouter_key,
+            base_url=base_url,
+            timeout=timeout_seconds,
+            max_retries=max_retries,
+        )
+
+    if provider == "zhipu":
+        zhipu_key = os.getenv("ZHIPU_API_KEY")
+        if not zhipu_key:
+            return None
+        model = os.getenv("ZHIPU_MODEL", "glm-4.7-flash")
+        base_url = os.getenv("ZHIPU_BASE_URL", "https://open.bigmodel.cn/api/paas/v4/")
+        return ChatOpenAI(
+            model=model,
+            temperature=temperature,
+            api_key=zhipu_key,
+            base_url=base_url,
+            timeout=timeout_seconds,
+            max_retries=max_retries,
+        )
+
+    if provider == "openai":
+        openai_key = os.getenv("OPENAI_API_KEY")
+        if not openai_key:
+            return None
+        model = os.getenv("OPENAI_MODEL", "gpt-4o")
+        return ChatOpenAI(
+            model=model,
+            temperature=temperature,
+            api_key=openai_key,
+            timeout=timeout_seconds,
+            max_retries=max_retries,
+        )
+
+    return None
+
+
+def invoke_with_rate_limit(invoke_fn):
+    global _LAST_LLM_CALL_AT
+    min_interval = float(os.getenv("LLM_MIN_INTERVAL_SECONDS", "1.0"))
+    with _LLM_CALL_LOCK:
+        now = time.monotonic()
+        target_at = max(now, _LAST_LLM_CALL_AT + min_interval)
+        _LAST_LLM_CALL_AT = target_at
+    wait = max(0.0, target_at - time.monotonic())
+    if wait > 0:
+        time.sleep(wait)
+    return invoke_fn()
+
+
+def invoke_with_turn_timeout(invoke_fn, timeout_seconds: Optional[float] = None):
+    if timeout_seconds is None:
+        timeout_seconds = float(os.getenv("LLM_TURN_TIMEOUT_SECONDS", "5"))
+    executor = ThreadPoolExecutor(max_workers=1)
+    future = executor.submit(invoke_fn)
+    try:
+        return future.result(timeout=timeout_seconds)
+    except FuturesTimeoutError as err:
+        future.cancel()
+        raise TimeoutError(f"LLM call timed out after {timeout_seconds}s") from err
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+
+
+class GraphState(TypedDict):
+    messages: Annotated[List[BaseMessage], add_messages]
+    user_input: str
+    requirements: UserRequirements
+    follow_up_questions: List[str]
+    build: BuildPlan
+    compatibility_issues: List[str]
+    estimated_power: int
+    route: Literal["ask_more", "recommend"]
+    response_text: str
+    enthusiasm_level: Literal["standard", "high"]
+    response_mode: Literal["llm", "fallback"]
+    fallback_reason: Optional[str]
+    high_cooperation: bool
+    turn_number: int
+    last_assistant_reply: str
+    model_provider: Literal["zhipu", "openrouter", "rules"]
+    template_history: Dict[str, List[int]]
+    avoid_repeat_field: Optional[str]
+
+
+class RequirementExtractor:
+    def extract(self, text: str, current: UserRequirements, llm=None) -> RequirementUpdate:
+        if llm is None:
+            return self._extract_with_rules(text, current)
+
+        prompt = ChatPromptTemplate.from_messages(
+            [
+                (
+                    "system",
+                    "你是PC装机需求提取器。"
+                    "从用户话术里提取预算、用途、分辨率、品牌偏好、禁用品牌、机箱尺寸、推荐优先级、"
+                    "是否需要显示器、存储容量需求、静音偏好、CPU偏好、游戏名称。"
+                    "priority 取值: budget/balanced/performance。"
+                    "如果识别到对应信息，请把 *_set 标记为 true。"
+                    "missing_fields 仅包含还不明确的关键字段: budget/use_case/resolution/monitor/storage/noise。",
+                ),
+                (
+                    "human",
+                    "当前需求: {current}\n用户输入: {text}",
+                ),
+            ]
+        )
+        try:
+            structured = llm.with_structured_output(RequirementUpdate)
+            return invoke_with_turn_timeout(
+                lambda: invoke_with_rate_limit(
+                    lambda: (prompt | structured).invoke(
+                        {"current": current.model_dump_json(), "text": text}
+                    )
+                )
+            )
+        except Exception:
+            return self._extract_with_rules(text, current)
+
+    def _extract_with_rules(self, text: str, current: UserRequirements) -> RequirementUpdate:
+        lower = text.lower()
+        update = RequirementUpdate()
+
+        values: List[int] = []
+        budget_context_tokens = [
+            "预算",
+            "价位",
+            "价格",
+            "花",
+            "人民币",
+            "rmb",
+            "￥",
+            "¥",
+            "元",
+            "块",
+        ]
+        has_budget_context = any(tok in lower for tok in budget_context_tokens)
+        if has_budget_context:
+            numbers = re.findall(r"(\d{4,6})", text)
+            if numbers:
+                values.extend(int(n) for n in numbers)
+
+            wan_numbers = re.findall(r"(\d+(?:\.\d+)?)\s*万", lower)
+            if wan_numbers:
+                values.extend(int(float(n) * 10000) for n in wan_numbers)
+
+            k_values = []
+            k_values.extend(
+                re.findall(
+                    r"(?:预算|价位|价格|预算在|控制在|大概|约|花|人民币|rmb|￥|¥)\s*([1-9]\d?(?:\.\d+)?)\s*k\b",
+                    lower,
+                )
+            )
+            k_values.extend(
+                re.findall(
+                    r"\b([1-9]\d?(?:\.\d+)?)\s*k\b\s*(?:预算|人民币|rmb|元|块)",
+                    lower,
+                )
+            )
+            if k_values:
+                values.extend(int(float(n) * 1000) for n in k_values)
+
+        if values:
+            vals = sorted(values)
+            if len(vals) >= 2:
+                update.budget_min = vals[0]
+                update.budget_max = vals[-1]
+            else:
+                update.budget_max = vals[0]
+                update.budget_min = int(vals[0] * 0.85)
+            update.budget_set = True
+
+        use_case = []
+        if any(k in lower for k in ["游戏", "gaming", "fps"]):
+            use_case.append("gaming")
+        if any(k in lower for k in ["剪辑", "pr", "davinci", "video"]):
+            use_case.append("video_editing")
+        if any(k in lower for k in ["ai", "深度学习", "模型"]):
+            use_case.append("ai")
+        if any(k in lower for k in ["办公", "office", "word", "excel"]):
+            use_case.append("office")
+        if use_case:
+            update.use_case = sorted(set(use_case))
+            update.use_case_set = True
+
+        if "2k" in lower or "1440" in lower:
+            update.resolution = "1440p"
+            update.resolution_set = True
+        elif "4k" in lower:
+            update.resolution = "4k"
+            update.resolution_set = True
+        elif "1080" in lower:
+            update.resolution = "1080p"
+            update.resolution_set = True
+
+        brand_blacklist = []
+        if "不要" in text and "amd" in lower:
+            brand_blacklist.append("AMD")
+        if "不要" in text and "intel" in lower:
+            brand_blacklist.append("Intel")
+        if brand_blacklist:
+            update.brand_blacklist = brand_blacklist
+
+        prefer_brands = []
+        if "prefer" in lower or "优先" in text:
+            if "amd" in lower:
+                prefer_brands.append("AMD")
+            if "intel" in lower:
+                prefer_brands.append("Intel")
+            if "nvidia" in lower:
+                prefer_brands.append("NVIDIA")
+        if prefer_brands:
+            update.prefer_brands = prefer_brands
+
+        if "matx" in lower:
+            update.case_size = "mATX"
+        if "atx" in lower:
+            update.case_size = "ATX"
+
+        if "静音" in text:
+            update.need_quiet = True
+            update.noise_set = True
+        if any(k in text for k in ["不在乎噪音", "噪音无所谓", "噪音不敏感"]):
+            update.need_quiet = False
+            update.noise_set = True
+        if "wifi" in lower:
+            update.need_wifi = True
+        if any(
+            k in text
+            for k in [
+                "需要显示器",
+                "含显示器",
+                "带显示器",
+                "算进预算",
+                "算在预算",
+                "包含显示器",
+            ]
+        ):
+            update.need_monitor = True
+            update.monitor_set = True
+        if any(k in text for k in ["不要显示器", "不需要显示器", "已有显示器"]):
+            update.need_monitor = False
+            update.monitor_set = True
+        if any(k in lower for k in ["144hz", "165hz", "240hz", "60hz"]):
+            hz = re.findall(r"(\d{2,3})\s*hz", lower)
+            if hz:
+                update.monitor_refresh_hz = int(hz[0])
+        if any(k in lower for k in ["1080p", "2k", "1440p", "4k"]):
+            if "4k" in lower:
+                update.monitor_resolution = "4k"
+            elif "2k" in lower or "1440p" in lower:
+                update.monitor_resolution = "1440p"
+            else:
+                update.monitor_resolution = "1080p"
+        if any(k in lower for k in ["1t", "2t", "512g", "1tb", "2tb"]):
+            if "2t" in lower or "2tb" in lower:
+                update.storage_target_gb = 2000
+            elif "1t" in lower or "1tb" in lower:
+                update.storage_target_gb = 1000
+            else:
+                update.storage_target_gb = 512
+            update.storage_set = True
+        if any(k in lower for k in ["intel", "amd"]):
+            if "intel" in lower:
+                update.cpu_preference = "Intel"
+            elif "amd" in lower:
+                update.cpu_preference = "AMD"
+        games = re.findall(r"(cs2|valorant|lol|dota2|apex|pubg|原神|黑神话)", lower)
+        if games:
+            update.game_titles = sorted(set(games))
+        if any(k in text for k in ["便宜点", "省点", "省钱", "降点预算", "预算太高"]):
+            update.priority = "budget"
+            update.budget_max = max(6000, int(current.budget_max * 0.9))
+            update.budget_min = max(5000, int(update.budget_max * 0.85))
+            update.budget_set = True
+        if any(k in text for k in ["性能高点", "性能优先", "拉满", "更强"]):
+            update.priority = "performance"
+        if any(k in text for k in ["均衡", "平衡"]):
+            update.priority = "balanced"
+
+        missing = []
+        if not (update.budget_set or current.budget_set):
+            missing.append("budget")
+        if not (update.use_case_set or current.use_case_set):
+            missing.append("use_case")
+        if not (update.resolution_set or current.resolution_set):
+            missing.append("resolution")
+        if not (update.monitor_set or current.monitor_set):
+            missing.append("monitor")
+        if not (update.storage_set or current.storage_set):
+            missing.append("storage")
+        if not (update.noise_set or current.noise_set):
+            missing.append("noise")
+        update.missing_fields = missing
+        return update
+
+
+def merge_requirements(current: UserRequirements, update: RequirementUpdate) -> UserRequirements:
+    payload = current.model_dump()
+    for key, value in update.model_dump().items():
+        if key == "missing_fields":
+            continue
+        if value is not None:
+            payload[key] = value
+    return UserRequirements.model_validate(payload)
+
+
+def ensure_budget_fit(req: UserRequirements, build: BuildPlan) -> BuildPlan:
+    # Keep parts realistic and let validation report budget overflow.
+    return build
+
+
+class RigForgeGraph:
+    def __init__(self, toolset: Toolset):
+        self.tool_map = toolset.register()
+        self.build_data_source = toolset.build_data_source
+        self.build_data_version = toolset.build_data_version
+        self.build_data_mode = toolset.build_data_mode
+        self.extractor = RequirementExtractor()
+        self.llm = _AUTO_LLM
+        self._llm_cache: Dict[tuple[str, float], object] = {}
+        self.fallback_templates = self._load_fallback_templates()
+        self.graph = self._build_graph()
+
+    @staticmethod
+    def _load_fallback_templates() -> Dict[str, List[str]]:
+        root = Path(__file__).resolve().parents[2]
+        path = root / "config" / "fallback_templates.json"
+        defaults: Dict[str, List[str]] = {
+            "no_question": ["你给的信息已经很有帮助了，我先按这些条件给你出一版方案。"],
+            "followup_prefix_high": ["太棒了，这个信息非常关键！我们继续："],
+            "followup_prefix_standard": ["收到，这条信息很关键。接下来我想确认："],
+            "opener_high": ["太棒了，这套配置已经非常接近你的目标："],
+            "opener_standard": ["太好了，已经按你的方向整理出一版配置："],
+            "closing_high": ["如果你愿意，我可以再给你一套更省钱的备选方案。"],
+            "closing_standard": ["如果你愿意，我可以再给你出一套更省钱的备选方案。"],
+        }
+        try:
+            with path.open("r", encoding="utf-8") as f:
+                data = json.load(f)
+            out: Dict[str, List[str]] = {}
+            for k, v in defaults.items():
+                values = data.get(k)
+                if isinstance(values, list) and all(isinstance(x, str) for x in values) and values:
+                    out[k] = values
+                else:
+                    out[k] = v
+            return out
+        except Exception:
+            return defaults
+
+    def _pick_template_from_category(
+        self,
+        category: str,
+        level: Literal["standard", "high"],
+        turn_number: int,
+        user_input: str,
+        template_history: Dict[str, List[int]],
+    ) -> tuple[str, Dict[str, List[int]]]:
+        options = self.fallback_templates.get(category, [])
+        if not options:
+            return "", template_history
+        used = template_history.get(category, [])
+        available = [i for i in range(len(options)) if i not in used]
+        if not available:
+            used = []
+            available = list(range(len(options)))
+        seed = f"{category}|{level}|{turn_number}|{user_input}".encode("utf-8")
+        pick = available[int(hashlib.md5(seed).hexdigest(), 16) % len(available)]
+        template_history.setdefault(category, []).append(pick)
+        return options[pick], template_history
+
+    def _get_cached_llm(self, provider: Literal["zhipu", "openrouter", "openai"], temperature: float):
+        key = (provider, temperature)
+        if key not in self._llm_cache:
+            self._llm_cache[key] = build_llm(provider, temperature)
+        return self._llm_cache[key]
+
+    def _runtime_llm(
+        self, provider: Literal["zhipu", "openrouter", "rules"], temperature: float
+    ):
+        if self.llm is _AUTO_LLM:
+            if provider == "rules":
+                return None
+            if provider in ("zhipu", "openrouter"):
+                return self._get_cached_llm(provider, temperature)
+            return None
+        if self.llm is None:
+            return None
+        return self.llm
+
+    def _provider_probe(self, provider: Literal["zhipu", "openrouter"]) -> tuple[bool, str]:
+        now = time.monotonic()
+        fail_until = _PROVIDER_FAIL_UNTIL.get(provider, 0.0)
+        if now < fail_until:
+            left = int(max(1, fail_until - now))
+            return False, f"冷却中({left}s)"
+
+        llm = self._get_cached_llm(provider, 0)
+        if llm is None:
+            return False, "未配置密钥"
+
+        probe_timeout = float(os.getenv("LLM_PROVIDER_PROBE_TIMEOUT_SECONDS", "1.5"))
+        fail_cooldown = float(os.getenv("LLM_PROVIDER_FAIL_COOLDOWN_SECONDS", "120"))
+        try:
+            invoke_with_turn_timeout(
+                lambda: invoke_with_rate_limit(lambda: llm.invoke("ping")),
+                timeout_seconds=probe_timeout,
+            )
+            return True, "可用"
+        except Exception as err:
+            _PROVIDER_FAIL_UNTIL[provider] = time.monotonic() + fail_cooldown
+            reason = self._classify_fallback_reason(err)
+            reason_map = {
+                "rate_limited": "限流",
+                "timeout": "超时",
+                "auth_error": "鉴权失败",
+                "model_error": "调用失败",
+            }
+            return False, reason_map.get(reason, "调用失败")
+
+    def select_provider_for_session(self) -> tuple[Literal["zhipu", "openrouter", "rules"], str]:
+        z_ok, z_reason = self._provider_probe("zhipu")
+        if z_ok:
+            return "zhipu", "智谱可用"
+
+        o_ok, o_reason = self._provider_probe("openrouter")
+        if o_ok:
+            return "openrouter", f"智谱不可用({z_reason})，已切换 OpenRouter"
+
+        return "rules", f"智谱不可用({z_reason})；OpenRouter不可用({o_reason})，当前使用规则模式"
+
+    def _build_graph(self):
+        builder = StateGraph(GraphState)
+        builder.add_node("collect_requirements", self.collect_requirements)
+        builder.add_node("generate_follow_up", self.generate_follow_up)
+        builder.add_node("recommend_build", self.recommend_build)
+        builder.add_node("validate_build", self.validate_build)
+        builder.add_node("compose_reply", self.compose_reply)
+
+        builder.set_entry_point("collect_requirements")
+        builder.add_conditional_edges(
+            "collect_requirements",
+            self.route_after_collection,
+            {"ask_more": "generate_follow_up", "recommend": "recommend_build"},
+        )
+        builder.add_edge("generate_follow_up", "compose_reply")
+        builder.add_edge("recommend_build", "validate_build")
+        builder.add_edge("validate_build", "compose_reply")
+        builder.add_edge("compose_reply", END)
+
+        return builder.compile()
+
+    def collect_requirements(self, state: GraphState):
+        current = state.get("requirements") or UserRequirements()
+        user_input = state["user_input"]
+        last_assistant_reply = state.get("last_assistant_reply", "")
+        llm = self._runtime_llm(state.get("model_provider", "rules"), 0)
+        try:
+            update = self.extractor.extract(user_input, current, llm=llm)
+        except TypeError:
+            update = self.extractor.extract(user_input, current)
+        update = self._apply_keyword_guards(update, user_input)
+        update = self._apply_contextual_short_answer(update, user_input, last_assistant_reply)
+        update = self._normalize_update_flags(update)
+        lower = user_input.lower()
+        if update.budget_max is None and any(
+            k in state["user_input"] for k in ["便宜点", "省点", "省钱", "再便宜", "降一点"]
+        ):
+            update.budget_max = max(6000, int(current.budget_max * 0.9))
+            update.budget_min = max(5000, int(update.budget_max * 0.85))
+            update.budget_set = True
+            if update.priority is None:
+                update.priority = "budget"
+        if update.priority is None and any(k in lower for k in ["性能优先", "更强", "拉满"]):
+            update.priority = "performance"
+        merged = merge_requirements(current, update)
+        stop_followup = self._should_stop_followup(user_input)
+        high_cooperation = self._is_high_cooperation(update)
+
+        missing = []
+        if not merged.budget_set:
+            missing.append("budget")
+        if not merged.use_case_set:
+            missing.append("use_case")
+        if not merged.resolution_set:
+            missing.append("resolution")
+        if not merged.monitor_set:
+            missing.append("monitor")
+        if not merged.storage_set:
+            missing.append("storage")
+        if not merged.noise_set:
+            missing.append("noise")
+
+        if stop_followup:
+            minimum_missing = self._minimum_missing_for_direct_recommend(merged)
+            if minimum_missing:
+                route = "ask_more"
+                questions = [self._minimum_required_question(minimum_missing[0])]
+            else:
+                route = "recommend"
+                questions = []
+        else:
+            route = "ask_more" if missing else "recommend"
+            questions = missing
+
+        avoid_repeat_field = None
+        if (
+            route == "ask_more"
+            and self._is_generic_continue(user_input)
+            and not self._has_material_update(update)
+        ):
+            last_field = self._infer_last_question_field(last_assistant_reply)
+            if last_field in questions:
+                avoid_repeat_field = last_field
+        return {
+            "requirements": merged,
+            "follow_up_questions": questions,
+            "route": route,
+            "high_cooperation": high_cooperation,
+            "avoid_repeat_field": avoid_repeat_field,
+        }
+
+    def route_after_collection(self, state: GraphState):
+        return state["route"]
+
+    def generate_follow_up(self, state: GraphState):
+        missing = state["follow_up_questions"]
+        req = state["requirements"]
+        high_cooperation = state.get("high_cooperation", False)
+        avoid_repeat_field = state.get("avoid_repeat_field")
+        mapping = {
+            "budget": "你的预算范围大概是多少呀？例如 7000-9000 或 10000-12000。",
+            "use_case": "这台电脑主要做什么呢？游戏、办公、剪辑，还是 AI 开发？",
+            "resolution": "你目标分辨率和刷新率是啥？比如 1080p 144Hz、2K 165Hz、4K 60Hz。",
+            "cpu_preference": "CPU 你更偏向 Intel 还是 AMD？没有偏好我就按性价比来。",
+            "monitor": "你这次要不要把显示器也算进预算里？",
+            "storage": "你对存储有要求吗？比如至少 1TB，或者 2TB 更稳。",
+            "noise": "你会在意静音吗？比如希望风扇噪音尽量小。",
+        }
+        optional_questions: List[str] = []
+        ask_cpu_preference = not (req.cpu_preference or "").strip()
+        known_missing_keys = [item for item in missing if item in mapping]
+        candidate_keys = list(known_missing_keys)
+        if ask_cpu_preference and known_missing_keys:
+            candidate_keys.append("cpu_preference")
+        if "gaming" in req.use_case and not req.game_titles:
+            optional_questions.append("你平时主要玩哪些游戏？我会按目标帧率给你分配显卡和 CPU 预算。")
+        if req.need_monitor and not req.monitor_resolution:
+            optional_questions.append("显示器你期望 1080p、2K 还是 4K？刷新率有目标吗，比如 144Hz/165Hz？")
+
+        ask_limit = 2 if high_cooperation else 1
+        ordered_keys = ["budget", "use_case", "resolution", "cpu_preference", "monitor", "storage", "noise"]
+        if avoid_repeat_field in ordered_keys:
+            ordered_keys = [k for k in ordered_keys if k != avoid_repeat_field] + [avoid_repeat_field]
+        questions: List[str] = []
+        for key in ordered_keys:
+            if key in candidate_keys:
+                questions.append(mapping.get(key, key))
+            if len(questions) >= ask_limit:
+                break
+        if not questions:
+            for item in missing:
+                if len(questions) >= ask_limit:
+                    break
+                if item not in mapping:
+                    questions.append(item)
+        if not questions and optional_questions:
+            questions = optional_questions[:ask_limit]
+        return {"follow_up_questions": questions}
+
+    def recommend_build(self, state: GraphState):
+        req = state["requirements"]
+        _context = self.tool_map["recommendation_context"].invoke(req.model_dump())
+        build = pick_build_from_candidates(req, self.tool_map["search_parts"])
+        build = ensure_budget_fit(req, build)
+        return {"build": build}
+
+    def validate_build(self, state: GraphState):
+        build = state["build"]
+        skus = []
+        for key in ["cpu", "motherboard", "memory", "gpu", "psu", "case", "cooler"]:
+            part = getattr(build, key)
+            if part:
+                skus.append(part.sku)
+
+        if len(skus) < 7:
+            return {
+                "compatibility_issues": ["build generation incomplete, please provide a wider budget"],
+                "estimated_power": 0,
+            }
+
+        issues = self.tool_map["check_compatibility"].invoke(
+            {
+                "cpu_sku": build.cpu.sku,
+                "motherboard_sku": build.motherboard.sku,
+                "memory_sku": build.memory.sku,
+                "gpu_sku": build.gpu.sku,
+                "psu_sku": build.psu.sku,
+                "case_sku": build.case.sku,
+                "cooler_sku": build.cooler.sku,
+            }
+        )
+        estimated_power = self.tool_map["estimate_power"].invoke({"parts": skus})
+        if build.total_price() > state["requirements"].budget_max:
+            issues.append(
+                f"Total price {build.total_price()} exceeds budget max {state['requirements'].budget_max}"
+            )
+        return {
+            "compatibility_issues": issues,
+            "estimated_power": estimated_power,
+        }
+
+    def compose_reply(self, state: GraphState):
+        llm = self._runtime_llm(state.get("model_provider", "rules"), 0.2)
+        template_history = deepcopy(state.get("template_history", {}))
+        level = state.get("enthusiasm_level", "standard")
+        effective_level = self._effective_enthusiasm_level(level, state.get("turn_number", 1))
+        follow_style, recommend_style = self._enthusiasm_instructions(effective_level)
+        if state.get("follow_up_questions"):
+            questions = state["follow_up_questions"]
+            if llm:
+                try:
+                    follow_prompt = ChatPromptTemplate.from_messages(
+                        [
+                            (
+                                "system",
+                                "你是热情且专业的装机顾问。"
+                                "用自然中文与用户互动，语气积极、口语化，不要太长，语言要灵活。"
+                                "先对用户本轮给出的配置信息做一句积极肯定；"
+                                "如果用户信息明显不妥，再温和指出并给建议；"
+                                "然后只提出一个最关键的下一个问题，不要一次问多个问题。"
+                                "{follow_style}",
+                            ),
+                            ("human", "用户本轮输入: {user_input}\n问题列表: {questions}"),
+                        ]
+                    )
+                    reply = invoke_with_rate_limit(
+                        lambda: invoke_with_turn_timeout(
+                            lambda: (follow_prompt | llm).invoke(
+                                {
+                                    "user_input": state.get("user_input", ""),
+                                    "questions": "\n".join(f"- {q}" for q in questions),
+                                    "follow_style": follow_style,
+                                }
+                            ).content
+                        )
+                    )
+                    response_mode = "llm"
+                    fallback_reason = None
+                except Exception as err:
+                    reply, template_history = self._fallback_followup_reply(
+                        questions,
+                        effective_level,
+                        turn_number=state.get("turn_number", 1),
+                        user_input=state.get("user_input", ""),
+                        template_history=template_history,
+                    )
+                    response_mode = "fallback"
+                    fallback_reason = self._classify_fallback_reason(err)
+            else:
+                reply, template_history = self._fallback_followup_reply(
+                    questions,
+                    effective_level,
+                    turn_number=state.get("turn_number", 1),
+                    user_input=state.get("user_input", ""),
+                    template_history=template_history,
+                )
+                response_mode = "fallback"
+                fallback_reason = "no_model_config"
+            return {
+                "response_text": reply,
+                "response_mode": response_mode,
+                "fallback_reason": fallback_reason,
+                "template_history": template_history,
+                "messages": [AIMessage(content=reply)],
+            }
+
+        build = state["build"]
+        req = state["requirements"]
+        issues = state.get("compatibility_issues", [])
+        perf = self._estimate_performance_label(req)
+
+        if llm:
+            try:
+                prompt = ChatPromptTemplate.from_messages(
+                    [
+                        (
+                            "system",
+                            "你是热情、靠谱的专业装机顾问。"
+                            "先用一句积极反馈提升用户参与感，再给出可执行建议。"
+                            "用中文输出，简洁、清楚、避免空话。"
+                            "{recommend_style}",
+                        ),
+                        (
+                            "human",
+                            "需求: {req}\n方案: {build}\n风险: {issues}\n总价: {price}\n功耗: {power}\n"
+                            "请输出: 1) 推荐摘要 2) 关键配件理由 3) 风险与替代建议。",
+                        ),
+                    ]
+                )
+                reply = invoke_with_rate_limit(
+                    lambda: invoke_with_turn_timeout(
+                        lambda: (prompt | llm).invoke(
+                            {
+                                "req": req.model_dump_json(),
+                                "build": build.model_dump_json(),
+                                "issues": issues,
+                                "price": build.total_price(),
+                                "power": state.get("estimated_power", 0),
+                                "recommend_style": recommend_style,
+                            }
+                        ).content
+                    )
+                )
+                response_mode = "llm"
+                fallback_reason = None
+            except Exception as err:
+                reply, template_history = self._fallback_reply(
+                    build,
+                    issues,
+                    perf,
+                    effective_level,
+                    turn_number=state.get("turn_number", 1),
+                    user_input=state.get("user_input", ""),
+                    template_history=template_history,
+                )
+                response_mode = "fallback"
+                fallback_reason = self._classify_fallback_reason(err)
+        else:
+            reply, template_history = self._fallback_reply(
+                build,
+                issues,
+                perf,
+                effective_level,
+                turn_number=state.get("turn_number", 1),
+                user_input=state.get("user_input", ""),
+                template_history=template_history,
+            )
+            response_mode = "fallback"
+            fallback_reason = "no_model_config"
+
+        return {
+            "response_text": reply,
+            "response_mode": response_mode,
+            "fallback_reason": fallback_reason,
+            "template_history": template_history,
+            "messages": [AIMessage(content=reply)],
+        }
+
+    def invoke(
+        self,
+        message: str,
+        requirements: Optional[UserRequirements] = None,
+        enthusiasm_level: Literal["standard", "high"] = "standard",
+        turn_number: int = 1,
+        last_assistant_reply: str = "",
+        model_provider: Literal["zhipu", "openrouter", "rules"] = "rules",
+        template_history: Optional[Dict[str, List[int]]] = None,
+    ) -> ChatResponse:
+        req = requirements or UserRequirements()
+        history = deepcopy(template_history) if template_history is not None else {}
+        initial: GraphState = {
+            "messages": [
+                SystemMessage(
+                    content="你是RigForge（锐格锻造坊）装机顾问，风格热情专业，优先提高用户参与感并用简洁问题推进需求收集。"
+                ),
+                HumanMessage(content=message),
+            ],
+            "user_input": message,
+            "requirements": req,
+            "follow_up_questions": [],
+            "build": BuildPlan(),
+            "compatibility_issues": [],
+            "estimated_power": 0,
+            "route": "ask_more",
+            "response_text": "",
+            "enthusiasm_level": enthusiasm_level,
+            "response_mode": "fallback",
+            "fallback_reason": None,
+            "high_cooperation": False,
+            "turn_number": turn_number,
+            "last_assistant_reply": last_assistant_reply,
+            "model_provider": model_provider,
+            "template_history": history,
+            "avoid_repeat_field": None,
+        }
+        out = self.graph.invoke(initial)
+        turn_provider: Literal["zhipu", "openrouter", "rules"] = (
+            model_provider if out.get("response_mode", "fallback") == "llm" else "rules"
+        )
+        return ChatResponse(
+            reply=out.get("response_text", ""),
+            requirements=out.get("requirements", req),
+            build=out.get("build", BuildPlan()),
+            compatibility_issues=out.get("compatibility_issues", []),
+            estimated_power=out.get("estimated_power", 0),
+            estimated_performance=self._estimate_performance_label(out.get("requirements", req)),
+            enthusiasm_level=enthusiasm_level,
+            response_mode=out.get("response_mode", "fallback"),
+            fallback_reason=out.get("fallback_reason"),
+            session_model_provider=model_provider,
+            turn_model_provider=turn_provider,
+            build_data_source=self.build_data_source,
+            build_data_version=self.build_data_version,
+            build_data_mode=self.build_data_mode,
+            template_history=out.get("template_history", history),
+        )
+
+    @staticmethod
+    def _estimate_performance_label(req: UserRequirements) -> str:
+        if req.resolution == "4k":
+            return "4K中高画质可用，建议优先显卡预算"
+        if req.resolution == "1440p":
+            return "2K高画质主流游戏稳定"
+        return "1080p高帧率体验"
+
+    def _fallback_followup_reply(
+        self,
+        questions: List[str],
+        level: Literal["standard", "high"],
+        turn_number: int = 1,
+        user_input: str = "",
+        template_history: Optional[Dict[str, List[int]]] = None,
+    ) -> tuple[str, Dict[str, List[int]]]:
+        history = deepcopy(template_history or {})
+        if not questions:
+            text, history = self._pick_template_from_category(
+                "no_question", level, turn_number, user_input, history
+            )
+            return text, history
+        question_lines = "\n".join(f"- {q}" for q in questions[:2])
+        category = "followup_prefix_high" if level == "high" else "followup_prefix_standard"
+        prefix, history = self._pick_template_from_category(
+            category, level, turn_number, user_input, history
+        )
+        return prefix + "\n" + question_lines, history
+
+    @staticmethod
+    def _enthusiasm_instructions(level: Literal["standard", "high"]) -> tuple[str, str]:
+        if level == "high":
+            return (
+                "每轮先给一句明显积极反馈，语气更有感染力，尽量结合用户本轮信息做鼓励。",
+                "开头先肯定用户目标与偏好，用更强互动语气提升参与感，再进入建议。",
+            )
+        return (
+            "每轮先给一句简短积极反馈即可，不要过度夸张，语气自然。",
+            "开头先简短肯定用户目标，再进入建议，语气专业稳重。",
+        )
+
+    @staticmethod
+    def _effective_enthusiasm_level(
+        level: Literal["standard", "high"], turn_number: int
+    ) -> Literal["standard", "high"]:
+        if level == "high" and turn_number > 2:
+            return "standard"
+        return level
+
+    def _fallback_reply(
+        self,
+        build: BuildPlan,
+        issues: List[str],
+        perf: str,
+        level: Literal["standard", "high"],
+        turn_number: int = 1,
+        user_input: str = "",
+        template_history: Optional[Dict[str, List[int]]] = None,
+    ) -> tuple[str, Dict[str, List[int]]]:
+        history = deepcopy(template_history or {})
+        opener_category = "opener_high" if level == "high" else "opener_standard"
+        opener, history = self._pick_template_from_category(
+            opener_category, level, turn_number, user_input, history
+        )
+        lines = [
+            opener,
+            "推荐方案已生成（新机）：",
+            f"- CPU: {build.cpu.name if build.cpu else 'N/A'}",
+            f"- 主板: {build.motherboard.name if build.motherboard else 'N/A'}",
+            f"- 内存: {build.memory.name if build.memory else 'N/A'}",
+            f"- 显卡: {build.gpu.name if build.gpu else 'N/A'}",
+            f"- SSD: {build.storage.name if build.storage else 'N/A'}",
+            f"- 电源: {build.psu.name if build.psu else 'N/A'}",
+            f"- 机箱: {build.case.name if build.case else 'N/A'}",
+            f"- 散热: {build.cooler.name if build.cooler else 'N/A'}",
+            f"- 预估总价: {build.total_price()} 元",
+            f"- 性能预估: {perf}",
+        ]
+        if issues:
+            lines.append("- 兼容性风险: " + "; ".join(issues))
+        else:
+            lines.append("- 兼容性检查: 通过")
+        closing_category = "closing_high" if level == "high" else "closing_standard"
+        closing, history = self._pick_template_from_category(
+            closing_category, level, turn_number, user_input, history
+        )
+        lines.append(closing)
+        return "\n".join(lines), history
+
+    @staticmethod
+    def _classify_fallback_reason(err: Exception) -> str:
+        name = type(err).__name__.lower()
+        msg = str(err).lower()
+        if "ratelimit" in name or "rate limit" in msg or "429" in msg:
+            return "rate_limited"
+        if "auth" in name or "api key" in msg or "unauthorized" in msg:
+            return "auth_error"
+        if "timeout" in name or "timeout" in msg:
+            return "timeout"
+        return "model_error"
+
+    @staticmethod
+    def _should_stop_followup(text: str) -> bool:
+        lower = text.lower()
+        keywords = [
+            "其他我都不知道",
+            "我都不知道",
+            "我也不知道",
+            "不清楚",
+            "你看着配",
+            "你来定",
+            "你决定",
+            "直接推荐",
+            "先这样",
+            "不用再问",
+            "别再问了",
+            "按默认",
+        ]
+        return any(k in lower or k in text for k in keywords)
+
+    @staticmethod
+    def _is_high_cooperation(update: RequirementUpdate) -> bool:
+        signal_fields = [
+            update.budget_set,
+            update.use_case_set,
+            update.resolution_set,
+            update.monitor_set,
+            update.storage_set,
+            update.noise_set,
+            bool(update.cpu_preference),
+            bool(update.game_titles),
+            bool(update.prefer_brands),
+            bool(update.brand_blacklist),
+        ]
+        return sum(1 for x in signal_fields if x) >= 2
+
+    @staticmethod
+    def _minimum_missing_for_direct_recommend(req: UserRequirements) -> List[str]:
+        missing = []
+        if not req.budget_set:
+            missing.append("budget")
+        if not req.use_case_set:
+            missing.append("use_case")
+        return missing
+
+    @staticmethod
+    def _minimum_required_question(field_name: str) -> str:
+        mapping = {
+            "budget": "可以直接给你方案。先告诉我一个预算范围，比如 7000-9000。",
+            "use_case": "可以直接给你方案。再告诉我主要用途：游戏、办公、剪辑还是 AI？",
+        }
+        return mapping.get(field_name, "可以直接给你方案。请先补充一个最关键的需求。")
+
+    @staticmethod
+    def _normalize_update_flags(update: RequirementUpdate) -> RequirementUpdate:
+        if update.budget_set is None and (update.budget_min is not None or update.budget_max is not None):
+            update.budget_set = True
+        if update.use_case_set is None and update.use_case:
+            update.use_case_set = True
+        if update.resolution_set is None and update.resolution is not None:
+            update.resolution_set = True
+        if update.monitor_set is None and update.need_monitor is not None:
+            update.monitor_set = True
+        if update.storage_set is None and update.storage_target_gb is not None:
+            update.storage_set = True
+        if update.noise_set is None and update.need_quiet is not None:
+            update.noise_set = True
+        return update
+
+    @staticmethod
+    def _apply_keyword_guards(update: RequirementUpdate, text: str) -> RequirementUpdate:
+        lower = text.lower()
+        if any(
+            k in text
+            for k in [
+                "需要显示器",
+                "含显示器",
+                "带显示器",
+                "算进预算",
+                "算在预算",
+                "包含显示器",
+            ]
+        ):
+            update.need_monitor = True
+        if any(k in text for k in ["不要显示器", "不需要显示器", "已有显示器"]):
+            update.need_monitor = False
+        if "静音" in text:
+            update.need_quiet = True
+        if any(k in text for k in ["不在乎噪音", "噪音无所谓", "噪音不敏感"]):
+            update.need_quiet = False
+
+        if update.storage_target_gb is None:
+            if "2t" in lower or "2tb" in lower:
+                update.storage_target_gb = 2000
+            elif "1t" in lower or "1tb" in lower:
+                update.storage_target_gb = 1000
+            elif "512g" in lower:
+                update.storage_target_gb = 512
+        return update
+
+    @staticmethod
+    def _apply_contextual_short_answer(
+        update: RequirementUpdate, user_input: str, last_assistant_reply: str
+    ) -> RequirementUpdate:
+        raw_text = user_input.strip().lower()
+        if len(raw_text) > 24:
+            return update
+
+        text = re.sub(r"[^\w\u4e00-\u9fff]+", "", raw_text)
+        yes_words = {
+            "要",
+            "是",
+            "需要",
+            "好",
+            "好的",
+            "可以",
+            "可以的",
+            "行",
+            "行的",
+            "要的",
+            "对",
+            "嗯",
+            "嗯嗯",
+            "ok",
+            "okay",
+        }
+        no_words = {"不要", "不用", "不需要", "否", "不", "no"}
+        if text not in yes_words and text not in no_words:
+            yes_no_matched = False
+        else:
+            yes_no_matched = True
+
+        last = (last_assistant_reply or "").lower()
+        asks_monitor = ("显示器" in last) and ("预算" in last or "需要" in last or "要不要" in last)
+        asks_noise = ("静音" in last) or ("噪音" in last)
+        if yes_no_matched:
+            if asks_monitor:
+                update.need_monitor = text in yes_words
+                update.monitor_set = True
+            if asks_noise:
+                update.need_quiet = text in yes_words
+                update.noise_set = True
+
+        asks_budget = "预算" in last or "价位" in last or "多少钱" in last
+        if asks_budget and not update.budget_set:
+            # Support concise budget replies: "9000", "9k", "9000-10000", "9000到10000".
+            normalized = raw_text.replace(" ", "")
+            values: List[int] = []
+
+            range_match = re.findall(r"(\d{3,6})\s*[-~到]\s*(\d{3,6})", normalized)
+            for lo, hi in range_match:
+                values.extend([int(lo), int(hi)])
+
+            if not values:
+                k_match = re.findall(r"\b([1-9]\d?(?:\.\d+)?)k\b", normalized)
+                if k_match:
+                    values.extend(int(float(x) * 1000) for x in k_match)
+
+            if not values:
+                num_match = re.findall(r"\b(\d{3,6})\b", normalized)
+                if num_match:
+                    values.extend(int(x) for x in num_match)
+
+            if values:
+                vals = sorted(values)
+                if len(vals) >= 2:
+                    update.budget_min = vals[0]
+                    update.budget_max = vals[-1]
+                else:
+                    update.budget_max = vals[0]
+                    update.budget_min = int(vals[0] * 0.85)
+                update.budget_set = True
+        return update
+
+    @staticmethod
+    def _is_generic_continue(text: str) -> bool:
+        normalized = re.sub(r"[^\w\u4e00-\u9fff]+", "", text.strip().lower())
+        if not normalized:
+            return False
+        tokens = {
+            "好",
+            "好的",
+            "ok",
+            "okay",
+            "继续",
+            "继续吧",
+            "继续说",
+            "继续问",
+            "下一步",
+            "往下",
+        }
+        return normalized in tokens
+
+    @staticmethod
+    def _has_material_update(update: RequirementUpdate) -> bool:
+        return any(
+            [
+                update.budget_set is True,
+                update.use_case_set is True,
+                update.resolution_set is True,
+                update.monitor_set is True,
+                update.storage_set is True,
+                update.noise_set is True,
+                update.priority is not None,
+                update.cpu_preference is not None,
+                bool(update.game_titles),
+                bool(update.prefer_brands),
+                bool(update.brand_blacklist),
+            ]
+        )
+
+    @staticmethod
+    def _infer_last_question_field(last_assistant_reply: str) -> Optional[str]:
+        last = (last_assistant_reply or "").lower()
+        if not last:
+            return None
+        if "预算" in last:
+            return "budget"
+        if "主要做什么" in last or "游戏、办公、剪辑" in last or "ai 开发" in last:
+            return "use_case"
+        if "分辨率" in last or "刷新率" in last:
+            return "resolution"
+        if "intel" in last or "amd" in last or "cpu" in last:
+            return "cpu_preference"
+        if "显示器" in last:
+            return "monitor"
+        if "存储" in last or "1tb" in last or "2tb" in last:
+            return "storage"
+        if "静音" in last or "噪音" in last:
+            return "noise"
+        return None
