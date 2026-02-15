@@ -69,6 +69,15 @@ class ChatService:
                 self._init_session_table()
                 self._cleanup_expired_sessions(force=True)
 
+        self._cached_model_provider: Literal["zhipu", "openrouter", "rules"] | None = None
+        self._cached_model_status_detail: str = ""
+        self._initialize_model_provider()
+
+    def _initialize_model_provider(self):
+        provider, detail = self.graph.select_provider_for_session()
+        self._cached_model_provider = provider
+        self._cached_model_status_detail = detail
+
     def chat(
         self,
         session_id: str,
@@ -88,7 +97,8 @@ class ChatService:
             if enthusiasm_level in ("standard", "high"):
                 session.enthusiasm_level = enthusiasm_level
             if session.model_provider is None:
-                session.model_provider, session.model_status_detail = self.graph.select_provider_for_session()
+                session.model_provider = self._cached_model_provider
+                session.model_status_detail = self._cached_model_status_detail
 
             last_assistant_reply = ""
             for item in reversed(session.history):

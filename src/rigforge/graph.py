@@ -16,7 +16,7 @@ from langchain_openai import ChatOpenAI
 from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
 
-from .schemas import BuildPlan, ChatResponse, RequirementUpdate, UserRequirements
+from .schemas import BuildPlan, ChatResponse, RequirementUpdate, RequirementUpdateWithReply, UserRequirements
 from .tools import Toolset, pick_build_from_candidates
 
 _LLM_CALL_LOCK = threading.Lock()
@@ -162,9 +162,73 @@ class GraphState(TypedDict):
 
 
 class RequirementExtractor:
+    def __init__(self):
+        self._cache: Dict[str, RequirementUpdate] = {}
+    
+    def _cache_key(self, text: str, current: UserRequirements) -> str:
+        """生成缓存键"""
+        return f"{text}:{current.model_dump_json()}"
+    
+    @staticmethod
+    def _build_collected_summary(req: UserRequirements) -> str:
+        """构建已收集信息的简洁摘要，用于发送给 LLM
+        
+        只包含已明确收集的信息，避免发送完整 JSON，减少 token 消耗
+        """
+        parts = []
+        
+        if req.budget_set:
+            parts.append(f"预算: {req.budget_min}-{req.budget_max}元")
+        
+        if req.use_case_set and req.use_case:
+            use_case_map = {
+                "gaming": "游戏",
+                "video_editing": "视频剪辑",
+                "ai": "AI开发",
+                "office": "办公",
+            }
+            uses = [use_case_map.get(u, u) for u in req.use_case]
+            parts.append(f"用途: {', '.join(uses)}")
+        
+        if req.resolution_set:
+            parts.append(f"分辨率: {req.resolution}")
+        
+        if req.cpu_preference:
+            parts.append(f"CPU偏好: {req.cpu_preference}")
+        
+        if req.storage_set and req.storage_target_gb:
+            parts.append(f"存储: {req.storage_target_gb}GB")
+        
+        if req.noise_set:
+            parts.append(f"静音: {'需要' if req.need_quiet else '不需要'}")
+        
+        if req.prefer_brands:
+            parts.append(f"品牌偏好: {', '.join(req.prefer_brands)}")
+        
+        if req.brand_blacklist:
+            parts.append(f"禁用品牌: {', '.join(req.brand_blacklist)}")
+        
+        if req.game_titles:
+            parts.append(f"游戏: {', '.join(req.game_titles)}")
+        
+        if req.priority and req.priority != "balanced":
+            priority_map = {"budget": "性价比优先", "performance": "性能优先"}
+            parts.append(f"优先级: {priority_map.get(req.priority, req.priority)}")
+        
+        if not parts:
+            return "暂无"
+        
+        return " | ".join(parts)
+    
     def extract(self, text: str, current: UserRequirements, llm=None) -> RequirementUpdate:
         if llm is None:
             return self._extract_with_rules(text, current)
+        
+        # 检查缓存
+        cache_key = self._cache_key(text, current)
+        if cache_key in self._cache:
+            print(f"[CACHE] 命中缓存，跳过 LLM 调用")
+            return self._cache[cache_key]
 
         start = time.time()
         
@@ -172,19 +236,14 @@ class RequirementExtractor:
             [
                 (
                     "system",
-                    "你是PC装机需求提取器。"
-                    "从用户话术里提取预算、用途、分辨率、品牌偏好、禁用品牌、机箱尺寸、推荐优先级、"
-                    "存储容量需求、静音偏好、CPU偏好、游戏名称。"
-                    "priority 取值: budget/balanced/performance。"
-                    "如果识别到对应信息，请把 *_set 标记为 true。"
-                    "missing_fields 仅包含还不明确的关键字段: budget/use_case/resolution/storage/noise。"
-                    "重要：直接输出 JSON，不要使用 markdown 代码块，不要包含 ```json 或 ``` 标记。"
-                    "只输出 JSON，不要包含任何解释性文字、注释或额外内容。"
-                    "保持 JSON 简洁，未识别的字段留空或设为默认值。",
+                    "你是PC装机需求提取器。提取：预算、用途、分辨率、品牌偏好、CPU偏好、静音需求。"
+                    "priority可选：budget/balanced/performance。"
+                    "直接输出JSON，不要markdown标记。"
+                    "注意：只提取用户本轮新增的信息，已收集的信息无需重复提取。",
                 ),
                 (
                     "human",
-                    "当前需求: {current}\n用户输入: {text}",
+                    "已收集信息: {collected}\n用户本轮输入: {text}",
                 ),
             ]
         )
@@ -195,14 +254,37 @@ class RequirementExtractor:
             structured = llm.with_structured_output(RequirementUpdate)
             print(f"[PERF] Structured output setup in {time.time() - structured_start:.3f}s")
             
+            # 构建增量信息，只发送已收集的信息摘要，而非完整 JSON
+            collected_summary = self._build_collected_summary(current)
+            
+            model_input = {
+                "collected": collected_summary,  # 简洁摘要，而非完整 JSON
+                "text": text
+            }
+            print(f"\n{'='*60}")
+            print(f"[LLM INPUT #1] 需求提取")
+            print(f"  已收集: {collected_summary}")
+            print(f"  用户输入: {text}")
+            print(f"{'='*60}\n")
+            
             invoke_start = time.time()
             result = invoke_with_turn_timeout(
                 lambda: invoke_with_rate_limit(
                     lambda: (prompt | structured).invoke(
-                        {"current": current.model_dump_json(), "text": text}
+                        model_input
                     )
                 )
             )
+            
+            # 显示模型输出
+            print(f"\n{'='*60}")
+            print(f"[LLM OUTPUT #1] 需求提取结果:")
+            print(f"  {result.model_dump_json()[:500]}...")
+            print(f"{'='*60}\n")
+            
+            # 存入缓存
+            self._cache[cache_key] = result
+            
             print(f"[PERF] Total extract() call: {time.time() - start:.3f}s")
             return result
         except Exception as e:
@@ -212,6 +294,94 @@ class RequirementExtractor:
             import traceback
             print(f"[DEBUG] Traceback:\n{traceback.format_exc()}")
             return self._extract_with_rules(text, current)
+
+    def extract_and_reply(self, text: str, current: UserRequirements, llm=None, follow_up_questions: List[str] = None, enthusiasm_level: str = "standard") -> RequirementUpdateWithReply:
+        if llm is None:
+            update = self._extract_with_rules(text, current)
+            reply = self._generate_fallback_reply(update, follow_up_questions, enthusiasm_level)
+            return RequirementUpdateWithReply(requirement_update=update, reply=reply)
+
+        start = time.time()
+        
+        follow_style, recommend_style = self._enthusiasm_instructions(enthusiasm_level)
+        
+        follow_up_text = ""
+        if follow_up_questions:
+            follow_up_text = "\n".join([f"- {q}" for q in follow_up_questions])
+        
+        prompt = ChatPromptTemplate.from_messages(
+            [
+                (
+                    "system",
+                    "你是PC装机需求提取器和回复生成器。"
+                    "从用户话术里提取预算、用途、分辨率、品牌偏好、禁用品牌、机箱尺寸、推荐优先级、"
+                    "存储容量需求、静音偏好、CPU偏好、游戏名称。"
+                    "priority 取值: budget/balanced/performance。"
+                    "如果识别到对应信息，请把 *_set 标记为 true。"
+                    "missing_fields 仅包含还不明确的关键字段: budget/use_case/resolution/storage/noise。"
+                    "重要：直接输出 JSON，不要使用 markdown 代码块，不要包含 ```json 或 ``` 标记。"
+                    "只输出 JSON，不要包含任何解释性文字、注释或额外内容。"
+                    "保持 JSON 简洁，未识别的字段留空或设为默认值。"
+                    "回复要求："
+                    "1. 用自然中文与用户互动，语气积极、口语化，不要太长，语言要灵活。"
+                    "2. 先对用户本轮给出的配置信息做一句积极肯定。"
+                    "3. 如果用户信息明显不妥，再温和指出并给建议。"
+                    "4. 然后只提出一个最关键的下一个问题，不要一次问多个问题。"
+                    "{follow_style}",
+                ),
+                (
+                    "human",
+                    "当前需求: {current}\n用户输入: {text}\n问题列表: {follow_up_text}",
+                ),
+            ]
+        )
+        print(f"[PERF] Prompt built in {time.time() - start:.3f}s")
+        
+        try:
+            structured_start = time.time()
+            structured = llm.with_structured_output(RequirementUpdateWithReply)
+            print(f"[PERF] Structured output setup in {time.time() - structured_start:.3f}s")
+            
+            invoke_start = time.time()
+            result = invoke_with_turn_timeout(
+                lambda: invoke_with_rate_limit(
+                    lambda: (prompt | structured).invoke(
+                        {
+                            "current": current.model_dump_json(),
+                            "text": text,
+                            "follow_up_text": follow_up_text,
+                            "follow_style": follow_style,
+                        }
+                    )
+                )
+            )
+            print(f"[PERF] Total extract_and_reply() call: {time.time() - start:.3f}s")
+            return result
+        except Exception as e:
+            print(f"[PERF] Extract and reply failed after {time.time() - start:.3f}s, falling back to rules: {e}")
+            print(f"[DEBUG] Exception type: {type(e).__name__}")
+            print(f"[DEBUG] Exception details: {str(e)}")
+            import traceback
+            print(f"[DEBUG] Traceback:\n{traceback.format_exc()}")
+            update = self._extract_with_rules(text, current)
+            reply = self._generate_fallback_reply(update, follow_up_questions, enthusiasm_level)
+            return RequirementUpdateWithReply(requirement_update=update, reply=reply)
+
+    def _generate_fallback_reply(self, update: RequirementUpdate, follow_up_questions: List[str], enthusiasm_level: str) -> str:
+        if follow_up_questions:
+            return follow_up_questions[0]
+        return "收到，我们继续。"
+
+    def _enthusiasm_instructions(self, level: str) -> tuple[str, str]:
+        if level == "high":
+            return (
+                "语气要热情、兴奋，多用感叹号和积极词汇！",
+                "语气要热情、兴奋，多用感叹号和积极词汇！"
+            )
+        return (
+            "语气要友好、专业，保持简洁。",
+            "语气要友好、专业，保持简洁。"
+        )
 
     def _extract_with_rules(self, text: str, current: UserRequirements) -> RequirementUpdate:
         lower = text.lower()
@@ -531,9 +701,74 @@ class RigForgeGraph:
         builder.add_edge("generate_follow_up", "compose_reply")
         builder.add_edge("recommend_build", "validate_build")
         builder.add_edge("validate_build", "compose_reply")
-        builder.add_edge("compose_reply", END)
+        builder.add_conditional_edges(
+            "compose_reply",
+            self.route_after_reply,
+            {"end": END, "continue": END},
+        )
 
         return builder.compile()
+
+    def route_after_reply(self, state: GraphState):
+        if state.get("response_text"):
+            return "end"
+        return "continue"
+
+    @staticmethod
+    def _should_use_llm(user_input: str, last_assistant_reply: str) -> bool:
+        """判断是否需要 LLM：简单输入用规则模式即可"""
+        text = user_input.strip()
+        text_lower = text.lower()
+        
+        # 简单关键词回复，不需要 LLM
+        simple_keywords = {
+            "办公", "游戏", "设计", "剪辑", "开发", "ai", "渲染", "直播",
+            "是", "否", "好", "好的", "ok", "可以", "行", "对", "是的",
+            "继续", "下一步", "不用了", "不需要", "不用", "不用吧",
+            "1080p", "2k", "4k", "1440p", "1k",
+            "intel", "amd", "nvidia", "n卡", "a卡", "英伟达",
+            "要", "要的", "要一个", "加一个", "加上",
+            "不要", "没必要", "算了",
+            "静音", "安静", "无所谓", "都行", "随便",
+            "1t", "2t", "512g", "1tb", "2tb",
+        }
+        
+        # 输入很短（<= 15 字符）且是简单关键词，跳过 LLM
+        if len(text) <= 15 and text_lower in simple_keywords:
+            return False
+        
+        # 输入很短且不包含复杂信息，跳过 LLM
+        if len(text) <= 8:
+            return False
+        
+        # 纯数字回复（预算），跳过 LLM
+        normalized = text.replace("-", "").replace("~", "").replace("到", "").replace("k", "").replace("K", "").replace("万", "000")
+        if normalized.isdigit():
+            return False
+        
+        # 预算范围格式 "7000-9000", "7k到9k" 等
+        budget_patterns = [
+            r"^\d+[kKwW]?[-~到]\d+[kKwW]?$",  # 7k-9k, 7000-9000
+            r"^\d+万?[-~到]\d+万?$",  # 1万-2万
+        ]
+        import re
+        if any(re.match(p, text) for p in budget_patterns):
+            return False
+        
+        # 上一个问题很简单，不需要 LLM 分析
+        last = last_assistant_reply.lower()
+        simple_questions = ["预算", "用途", "分辨率", "要不要", "需要", "静音", "噪音", "存储", "显示器", "品牌", "cpu"]
+        if any(q in last for q in simple_questions) and len(text) <= 25:
+            return False
+        
+        # 简单的品牌偏好回复
+        brand_keywords = ["华硕", "微星", "技嘉", "七彩虹", "影驰", "索泰", "铭瑄", "耕升", 
+                         "海盗船", "金士顿", "芝奇", "威刚", "英睿达", "光威",
+                         "三星", "西部数据", "致态", "铠侠"]
+        if text_lower in brand_keywords or any(brand in text for brand in brand_keywords) and len(text) <= 20:
+            return False
+        
+        return True
 
     def collect_requirements(self, state: GraphState):
         start_time = time.time()
@@ -541,9 +776,13 @@ class RigForgeGraph:
         user_input = state["user_input"]
         last_assistant_reply = state.get("last_assistant_reply", "")
         
+        # 暂时屏蔽简单判断逻辑，所有回答都优先走大模型
+        # use_llm = self._should_use_llm(user_input, last_assistant_reply)
+        use_llm = True  # 强制使用 LLM
+        
         llm_start = time.time()
-        llm = self._runtime_llm(state.get("model_provider", "rules"), 0)
-        print(f"[PERF] LLM setup took {time.time() - llm_start:.3f}s")
+        llm = self._runtime_llm(state.get("model_provider", "rules"), 0) if use_llm else None
+        print(f"[PERF] LLM setup took {time.time() - llm_start:.3f}s (use_llm={use_llm})")
         
         extract_start = time.time()
         try:
@@ -729,9 +968,17 @@ class RigForgeGraph:
 
     def compose_reply(self, state: GraphState):
         start = time.time()
+        
+        # 判断是否需要 LLM 生成追问回复
+        user_input = state.get("user_input", "")
+        questions = state.get("follow_up_questions", [])
+        
+        # 暂时屏蔽简单判断逻辑，所有回答都优先走大模型
+        use_llm_for_reply = True  # 强制使用 LLM
+        
         llm_setup_start = time.time()
-        llm = self._runtime_llm(state.get("model_provider", "rules"), 0.2)
-        print(f"[PERF] compose_reply LLM setup took {time.time() - llm_setup_start:.3f}s")
+        llm = self._runtime_llm(state.get("model_provider", "rules"), 0.2) if use_llm_for_reply else None
+        print(f"[PERF] compose_reply LLM setup took {time.time() - llm_setup_start:.3f}s (use_llm={use_llm_for_reply})")
         
         template_history = deepcopy(state.get("template_history", {}))
         print(f"[PERF] compose_reply started")
@@ -747,30 +994,41 @@ class RigForgeGraph:
                         [
                             (
                                 "system",
-                                "你是热情且专业的装机顾问。"
-                                "用自然中文与用户互动，语气积极、口语化，不要太长，语言要灵活。"
-                                "先对用户本轮给出的配置信息做一句积极肯定；"
-                                "如果用户信息明显不妥，再温和指出并给建议；"
-                                "然后只提出一个最关键的下一个问题，不要一次问多个问题。"
-                                "{follow_style}",
+                                "你是装机顾问。用简短自然的中文回复，语气积极。"
+                                "先肯定用户输入，再提一个问题。{follow_style}",
                             ),
-                            ("human", "用户本轮输入: {user_input}\n问题列表: {questions}"),
+                            ("human", "用户输入: {user_input}\n待问: {questions}"),
                         ]
                     )
                     print(f"[PERF] follow_prompt built in {time.time() - prompt_start:.3f}s")
+                    
+                    # 显示模型输入
+                    model_input = {
+                        "user_input": state.get("user_input", ""),
+                        "questions": "\n".join(f"- {q}" for q in questions),
+                        "follow_style": follow_style,
+                    }
+                    print(f"\n{'='*60}")
+                    print(f"[LLM INPUT #2] 追问回复生成")
+                    print(f"  用户输入: {model_input['user_input']}")
+                    print(f"  问题列表: {model_input['questions']}")
+                    print(f"{'='*60}\n")
                     
                     invoke_start = time.time()
                     reply = invoke_with_rate_limit(
                         lambda: invoke_with_turn_timeout(
                             lambda: (follow_prompt | llm).invoke(
-                                {
-                                    "user_input": state.get("user_input", ""),
-                                    "questions": "\n".join(f"- {q}" for q in questions),
-                                    "follow_style": follow_style,
-                                }
+                                model_input
                             ).content
                         )
                     )
+                    
+                    # 显示模型输出
+                    print(f"\n{'='*60}")
+                    print(f"[LLM OUTPUT #2] 追问回复:")
+                    print(f"  {reply[:300]}...")
+                    print(f"{'='*60}\n")
+                    
                     print(f"[PERF] follow_up LLM invoke took {time.time() - invoke_start:.3f}s")
                     
                     response_mode = "llm"

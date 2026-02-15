@@ -89,6 +89,11 @@ class RequirementUpdate(BaseModel):
     missing_fields: List[str] = Field(default_factory=list)
 
 
+class RequirementUpdateWithReply(BaseModel):
+    requirement_update: RequirementUpdate
+    reply: str
+
+
 class BuildPlan(BaseModel):
     cpu: Optional[Part] = None
     motherboard: Optional[Part] = None
