@@ -193,8 +193,23 @@ class RequirementExtractor:
         if req.resolution_set:
             parts.append(f"分辨率: {req.resolution}")
         
-        if req.cpu_preference:
-            parts.append(f"CPU偏好: {req.cpu_preference}")
+        if req.cpu_set:
+            if req.cpu_model:
+                parts.append(f"CPU型号: {req.cpu_model}")
+            elif req.cpu_preference:
+                parts.append(f"CPU偏好: {req.cpu_preference}")
+        
+        if req.gpu_set:
+            if req.gpu_model:
+                parts.append(f"显卡型号: {req.gpu_model}")
+            elif req.gpu_preference:
+                parts.append(f"显卡偏好: {req.gpu_preference}")
+        
+        if req.memory_set and req.memory_gb:
+            mem_info = f"内存: {req.memory_gb}GB"
+            if req.memory_type:
+                mem_info += f" ({req.memory_type})"
+            parts.append(mem_info)
         
         if req.storage_set and req.storage_target_gb:
             parts.append(f"存储: {req.storage_target_gb}GB")
@@ -214,6 +229,9 @@ class RequirementExtractor:
         if req.priority and req.priority != "balanced":
             priority_map = {"budget": "性价比优先", "performance": "性能优先"}
             parts.append(f"优先级: {priority_map.get(req.priority, req.priority)}")
+        
+        if req.case_preference:
+            parts.append(f"机箱偏好: {req.case_preference}")
         
         if not parts:
             return "暂无"
@@ -236,10 +254,22 @@ class RequirementExtractor:
             [
                 (
                     "system",
-                    "你是PC装机需求提取器。提取：预算、用途、分辨率、品牌偏好、CPU偏好、静音需求。"
-                    "priority可选：budget/balanced/performance。"
-                    "直接输出JSON，不要markdown标记。"
-                    "注意：只提取用户本轮新增的信息，已收集的信息无需重复提取。",
+                    "你是PC装机需求提取器。从用户输入中提取以下信息：\n"
+                    "- 预算范围 (budget_min, budget_max)\n"
+                    "- 用途 (use_case): gaming/video_editing/ai/office\n"
+                    "- 分辨率 (resolution): 1080p/1440p/4k\n"
+                    "- CPU偏好 (cpu_preference): Intel/AMD\n"
+                    "- 显卡偏好 (gpu_preference): NVIDIA/AMD/具体型号\n"
+                    "- 内存容量 (memory_gb): 数字\n"
+                    "- 存储容量 (storage_target_gb): 数字\n"
+                    "- 静音需求 (need_quiet): true/false\n"
+                    "- 品牌偏好 (prefer_brands)\n"
+                    "- 禁用品牌 (brand_blacklist)\n"
+                    "- 优先级 (priority): budget/balanced/performance\n"
+                    "\n"
+                    "重要：如果识别到某个字段，必须将对应的 *_set 字段设为 true！\n"
+                    "例如：识别到用途=办公，必须设置 use_case=['office'] 且 use_case_set=true\n"
+                    "直接输出JSON，不要markdown标记。",
                 ),
                 (
                     "human",
@@ -674,15 +704,20 @@ class RigForgeGraph:
             return False, reason_map.get(reason, "调用失败")
 
     def select_provider_for_session(self) -> tuple[Literal["zhipu", "openrouter", "rules"], str]:
-        z_ok, z_reason = self._provider_probe("zhipu")
-        if z_ok:
-            return "zhipu", "智谱可用"
-
-        o_ok, o_reason = self._provider_probe("openrouter")
-        if o_ok:
-            return "openrouter", f"智谱不可用({z_reason})，已切换 OpenRouter"
-
-        return "rules", f"智谱不可用({z_reason})；OpenRouter不可用({o_reason})，当前使用规则模式"
+        # 优先检查配置，避免启动时不必要的 LLM 调用
+        zhipu_key = os.getenv("ZHIPU_API_KEY")
+        openrouter_key = os.getenv("OPENROUTER_API_KEY")
+        
+        # 如果智谱有配置密钥，直接使用智谱（延迟检测可用性）
+        if zhipu_key:
+            return "zhipu", "智谱已配置"
+        
+        # 如果只有 OpenRouter 有配置
+        if openrouter_key:
+            return "openrouter", "智谱未配置，使用 OpenRouter"
+        
+        # 都没配置，使用规则模式
+        return "rules", "未配置 LLM 密钥，使用规则模式"
 
     def _build_graph(self):
         builder = StateGraph(GraphState)
@@ -812,6 +847,16 @@ class RigForgeGraph:
         merge_start = time.time()
         merged = merge_requirements(current, update)
         print(f"[PERF] Merge requirements took {time.time() - merge_start:.3f}s")
+        
+        # 诊断日志：显示需求提取和合并结果
+        print(f"\n[DEBUG] 需求提取结果:")
+        print(f"  update.use_case = {update.use_case}")
+        print(f"  update.use_case_set = {update.use_case_set}")
+        print(f"  update.budget_set = {update.budget_set}")
+        print(f"[DEBUG] 合并后状态:")
+        print(f"  merged.use_case = {merged.use_case}")
+        print(f"  merged.use_case_set = {merged.use_case_set}")
+        print(f"  merged.budget_set = {merged.budget_set}")
         
         stop_followup = self._should_stop_followup(user_input)
         high_cooperation = self._is_high_cooperation(update)
@@ -1339,7 +1384,13 @@ class RigForgeGraph:
             update.resolution_set,
             update.storage_set,
             update.noise_set,
+            update.cpu_set,
+            update.gpu_set,
+            update.memory_set,
             bool(update.cpu_preference),
+            bool(update.cpu_model),
+            bool(update.gpu_preference),
+            bool(update.gpu_model),
             bool(update.game_titles),
             bool(update.prefer_brands),
             bool(update.brand_blacklist),
@@ -1365,6 +1416,7 @@ class RigForgeGraph:
 
     @staticmethod
     def _normalize_update_flags(update: RequirementUpdate) -> RequirementUpdate:
+        # 核心需求标志
         if update.budget_set is None and (update.budget_min is not None or update.budget_max is not None):
             update.budget_set = True
         if update.use_case_set is None and update.use_case:
@@ -1375,6 +1427,15 @@ class RigForgeGraph:
             update.storage_set = True
         if update.noise_set is None and update.need_quiet is not None:
             update.noise_set = True
+        
+        # 新增配件偏好标志
+        if update.cpu_set is None and (update.cpu_preference or update.cpu_model):
+            update.cpu_set = True
+        if update.gpu_set is None and (update.gpu_preference or update.gpu_model):
+            update.gpu_set = True
+        if update.memory_set is None and update.memory_gb is not None:
+            update.memory_set = True
+        
         return update
 
     @staticmethod

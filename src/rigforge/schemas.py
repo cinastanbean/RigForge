@@ -37,55 +37,109 @@ class Part(BaseModel):
 
 
 class UserRequirements(BaseModel):
+    # === 核心需求 ===
     budget_min: int = 5000
     budget_max: int = 10000
     use_case: List[str] = Field(default_factory=list)
     resolution: str = "1080p"
+    priority: Literal["balanced", "budget", "performance"] = "balanced"
+    
+    # === 配件偏好（具体型号/规格）===
+    # CPU
+    cpu_preference: str = ""  # Intel/AMD 或具体型号如 "i5-13600K"
+    cpu_model: str = ""  # 用户指定的具体CPU型号
+    
+    # 显卡
+    gpu_preference: str = ""  # NVIDIA/AMD 或具体型号
+    gpu_model: str = ""  # 用户指定的具体显卡型号
+    
+    # 内存
+    memory_gb: int = 0  # 内存容量需求（如 16, 32, 64）
+    memory_type: str = ""  # DDR4/DDR5
+    
+    # 存储
+    storage_target_gb: int = 0  # 存储容量需求
+    storage_type: str = ""  # NVMe/SATA SSD
+    
+    # 主板
+    motherboard_preference: str = ""  # 品牌或具体型号偏好
+    
+    # 机箱
+    case_size: Literal["mATX", "ATX"] = "ATX"
+    case_preference: str = ""  # 机箱风格偏好（静音/RGB/紧凑等）
+    
+    # 电源
+    psu_wattage: int = 0  # 电源功率需求
+    psu_efficiency: str = ""  # 金牌/白金牌等
+    
+    # === 其他偏好 ===
     brand_blacklist: List[str] = Field(default_factory=list)
     prefer_brands: List[str] = Field(default_factory=list)
     need_wifi: bool = False
     need_quiet: bool = False
     need_rgb: bool = False
     need_monitor: Optional[bool] = None
-    storage_target_gb: int = 0
-    cpu_preference: str = ""
     game_titles: List[str] = Field(default_factory=list)
     monitor_resolution: str = ""
     monitor_refresh_hz: int = 0
-    case_size: Literal["mATX", "ATX"] = "ATX"
-    priority: Literal["balanced", "budget", "performance"] = "balanced"
+    
+    # === 状态标记 ===
     budget_set: bool = False
     use_case_set: bool = False
     resolution_set: bool = False
     monitor_set: bool = False
     storage_set: bool = False
     noise_set: bool = False
+    cpu_set: bool = False  # CPU偏好已设置
+    gpu_set: bool = False  # 显卡偏好已设置
+    memory_set: bool = False  # 内存需求已设置
 
 
 class RequirementUpdate(BaseModel):
+    # === 核心需求 ===
     budget_min: Optional[int] = None
     budget_max: Optional[int] = None
     use_case: Optional[List[str]] = None
     resolution: Optional[str] = None
+    priority: Optional[Literal["balanced", "budget", "performance"]] = None
+    
+    # === 配件偏好 ===
+    cpu_preference: Optional[str] = None
+    cpu_model: Optional[str] = None
+    gpu_preference: Optional[str] = None
+    gpu_model: Optional[str] = None
+    memory_gb: Optional[int] = None
+    memory_type: Optional[str] = None
+    storage_target_gb: Optional[int] = None
+    storage_type: Optional[str] = None
+    motherboard_preference: Optional[str] = None
+    case_size: Optional[Literal["mATX", "ATX"]] = None
+    case_preference: Optional[str] = None
+    psu_wattage: Optional[int] = None
+    psu_efficiency: Optional[str] = None
+    
+    # === 其他偏好 ===
     brand_blacklist: Optional[List[str]] = None
     prefer_brands: Optional[List[str]] = None
     need_wifi: Optional[bool] = None
     need_quiet: Optional[bool] = None
     need_rgb: Optional[bool] = None
     need_monitor: Optional[bool] = None
-    storage_target_gb: Optional[int] = None
-    cpu_preference: Optional[str] = None
     game_titles: Optional[List[str]] = None
     monitor_resolution: Optional[str] = None
     monitor_refresh_hz: Optional[int] = None
-    case_size: Optional[Literal["mATX", "ATX"]] = None
-    priority: Optional[Literal["balanced", "budget", "performance"]] = None
+    
+    # === 状态标记 ===
     budget_set: Optional[bool] = None
     use_case_set: Optional[bool] = None
     resolution_set: Optional[bool] = None
     monitor_set: Optional[bool] = None
     storage_set: Optional[bool] = None
     noise_set: Optional[bool] = None
+    cpu_set: Optional[bool] = None
+    gpu_set: Optional[bool] = None
+    memory_set: Optional[bool] = None
+    
     missing_fields: List[str] = Field(default_factory=list)
 
 
