@@ -141,6 +141,7 @@ class ChatResponse(BaseModel):
     fallback_reason: Optional[str] = None
     session_model_provider: Literal["zhipu", "openrouter", "rules"] = "rules"
     turn_model_provider: Literal["zhipu", "openrouter", "rules"] = "rules"
+    model_name: str = ""
     model_status_detail: str = ""
     build_data_source: str = "csv(jd+newegg)"
     build_data_version: str = "v0"

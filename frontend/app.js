@@ -108,7 +108,7 @@ function setRisks(payload) {
     openrouter: "OpenRouter",
     rules: "规则模式",
   };
-  const sessionProvider = providerMap[payload.session_model_provider] || payload.session_model_provider || "-";
+  const sessionProvider = payload.model_name || providerMap[payload.session_model_provider] || payload.session_model_provider || "-";
   const turnProvider = providerMap[payload.turn_model_provider] || payload.turn_model_provider || "-";
   let fallbackHtml = "";
   if (payload.response_mode === "fallback") {

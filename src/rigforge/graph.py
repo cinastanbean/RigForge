@@ -399,6 +399,19 @@ class RigForgeGraph:
         self.graph = self._build_graph()
 
     @staticmethod
+    def _get_model_name(provider: str) -> str:
+        """获取模型的具体名称"""
+        if provider == "zhipu":
+            return os.getenv("ZHIPU_MODEL", "glm-4.7-flash")
+        elif provider == "openrouter":
+            return os.getenv("OPENROUTER_MODEL", "openrouter/free")
+        elif provider == "openai":
+            return os.getenv("OPENAI_MODEL", "gpt-4o")
+        elif provider == "rules":
+            return "规则模式"
+        return provider
+
+    @staticmethod
     def _load_fallback_templates() -> Dict[str, List[str]]:
         root = Path(__file__).resolve().parents[2]
         path = root / "config" / "fallback_templates.json"
@@ -528,6 +541,7 @@ class RigForgeGraph:
         return builder.compile()
 
     def collect_requirements(self, state: GraphState):
+        start_time = time.time()
         current = state.get("requirements") or UserRequirements()
         user_input = state["user_input"]
         last_assistant_reply = state.get("last_assistant_reply", "")
@@ -536,6 +550,7 @@ class RigForgeGraph:
             update = self.extractor.extract(user_input, current, llm=llm)
         except TypeError:
             update = self.extractor.extract(user_input, current)
+        print(f"[DEBUG] collect_requirements LLM took {time.time() - start_time:.2f}s")
         update = self._apply_keyword_guards(update, user_input)
         update = self._apply_contextual_short_answer(update, user_input, last_assistant_reply)
         update = self._normalize_update_flags(update)
@@ -646,9 +661,11 @@ class RigForgeGraph:
         return {"follow_up_questions": questions}
 
     def recommend_build(self, state: GraphState):
+        start_time = time.time()
         req = state["requirements"]
         _context = self.tool_map["recommendation_context"].invoke(req.model_dump())
         build = pick_build_from_candidates(req, self.tool_map["search_parts"])
+        print(f"[DEBUG] pick_build_from_candidates took {time.time() - start_time:.2f}s")
         build = ensure_budget_fit(req, build)
         return {"build": build}
 
@@ -688,8 +705,10 @@ class RigForgeGraph:
         }
 
     def compose_reply(self, state: GraphState):
+        start_time = time.time()
         llm = self._runtime_llm(state.get("model_provider", "rules"), 0.2)
         template_history = deepcopy(state.get("template_history", {}))
+        print(f"[DEBUG] compose_reply LLM started")
         level = state.get("enthusiasm_level", "standard")
         effective_level = self._effective_enthusiasm_level(level, state.get("turn_number", 1))
         follow_style, recommend_style = self._enthusiasm_instructions(effective_level)
@@ -875,6 +894,7 @@ class RigForgeGraph:
             enthusiasm_level=enthusiasm_level,
             response_mode=out.get("response_mode", "fallback"),
             fallback_reason=out.get("fallback_reason"),
+            model_name=self._get_model_name(model_provider),
             session_model_provider=model_provider,
             turn_model_provider=turn_provider,
             build_data_source=self.build_data_source,
@@ -1131,7 +1151,7 @@ class RigForgeGraph:
                 update.noise_set = True
 
         asks_budget = "预算" in last or "价位" in last or "多少钱" in last
-        if asks_budget and not update.budget_set:
+        if asks_budget:
             # Support concise budget replies: "9000", "9k", "9000-10000", "9000到10000".
             normalized = raw_text.replace(" ", "")
             values: List[int] = []

@@ -54,11 +54,23 @@ def _bootstrap_parts_repo() -> None:
             missing.append(str(CSV_NEWEGG_PATH))
         raise RuntimeError(f"required CSV data file missing: {', '.join(missing)}")
 
-    rebuild_runtime_db(
-        db_path=RUNTIME_PARTS_DB_PATH,
-        jd_csv=CSV_JD_PATH,
-        newegg_csv=CSV_NEWEGG_PATH,
-    )
+    # 检查是否需要重建数据库（CSV 文件比数据库新，或数据库不存在）
+    need_rebuild = False
+    if not RUNTIME_PARTS_DB_PATH.exists():
+        need_rebuild = True
+    else:
+        csv_mtime = max(CSV_JD_PATH.stat().st_mtime, CSV_NEWEGG_PATH.stat().st_mtime)
+        db_mtime = RUNTIME_PARTS_DB_PATH.stat().st_mtime
+        if csv_mtime > db_mtime:
+            need_rebuild = True
+
+    if need_rebuild:
+        result = rebuild_runtime_db(
+            db_path=RUNTIME_PARTS_DB_PATH,
+            jd_csv=CSV_JD_PATH,
+            newegg_csv=CSV_NEWEGG_PATH,
+        )
+        print(f"[RigForge] Database rebuilt: {result['rows_total']} parts loaded")
     
 
 def _normalize_mode(mode: str | None) -> BuildDataMode:
