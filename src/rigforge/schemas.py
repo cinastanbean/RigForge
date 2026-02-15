@@ -146,6 +146,7 @@ class RequirementUpdate(BaseModel):
 class RequirementUpdateWithReply(BaseModel):
     requirement_update: RequirementUpdate
     reply: str
+    should_continue: bool = True
 
 
 class BuildPlan(BaseModel):

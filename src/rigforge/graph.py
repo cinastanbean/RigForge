@@ -159,6 +159,7 @@ class GraphState(TypedDict):
     model_provider: Literal["zhipu", "openrouter", "rules"]
     template_history: Dict[str, List[int]]
     avoid_repeat_field: Optional[str]
+    interaction_mode: Literal["chat", "component"]
 
 
 class RequirementExtractor:
@@ -329,39 +330,80 @@ class RequirementExtractor:
         if llm is None:
             update = self._extract_with_rules(text, current)
             reply = self._generate_fallback_reply(update, follow_up_questions, enthusiasm_level)
-            return RequirementUpdateWithReply(requirement_update=update, reply=reply)
+            return RequirementUpdateWithReply(requirement_update=update, reply=reply, should_continue=True)
 
         start = time.time()
         
         follow_style, recommend_style = self._enthusiasm_instructions(enthusiasm_level)
         
-        follow_up_text = ""
-        if follow_up_questions:
-            follow_up_text = "\n".join([f"- {q}" for q in follow_up_questions])
+        collected_summary = self._build_collected_summary(current)
         
         prompt = ChatPromptTemplate.from_messages(
             [
                 (
                     "system",
-                    "你是PC装机需求提取器和回复生成器。"
-                    "从用户话术里提取预算、用途、分辨率、品牌偏好、禁用品牌、机箱尺寸、推荐优先级、"
-                    "存储容量需求、静音偏好、CPU偏好、游戏名称。"
-                    "priority 取值: budget/balanced/performance。"
-                    "如果识别到对应信息，请把 *_set 标记为 true。"
-                    "missing_fields 仅包含还不明确的关键字段: budget/use_case/resolution/storage/noise。"
-                    "重要：直接输出 JSON，不要使用 markdown 代码块，不要包含 ```json 或 ``` 标记。"
-                    "只输出 JSON，不要包含任何解释性文字、注释或额外内容。"
-                    "保持 JSON 简洁，未识别的字段留空或设为默认值。"
-                    "回复要求："
-                    "1. 用自然中文与用户互动，语气积极、口语化，不要太长，语言要灵活。"
-                    "2. 先对用户本轮给出的配置信息做一句积极肯定。"
-                    "3. 如果用户信息明显不妥，再温和指出并给建议。"
-                    "4. 然后只提出一个最关键的下一个问题，不要一次问多个问题。"
-                    "{follow_style}",
+                    "你是专业的PC装机顾问，负责与用户对话收集需求信息。\n\n"
+                    "重要说明：\n"
+                    "- 你只负责通过自然语言与用户沟通，收集用户需求\n"
+                    "- 你不负责推荐具体的硬件配置\n"
+                    "- 硬件配置推荐由独立的算法环节负责，根据收集到的需求自动生成\n\n"
+                    "你的任务：\n"
+                    "1. 从用户输入中提取装机需求信息\n"
+                    "2. 判断是否需要继续提问收集更多信息\n"
+                    "3. 如果需要继续，生成自然、友好的回复并提出下一个最关键的问题\n"
+                    "4. 如果信息足够或用户拒绝继续，标记 should_continue=false，表示需求收集完成\n\n"
+                    "需要收集的关键信息：\n"
+                    "- 预算范围 (budget_min, budget_max): 整数\n"
+                    "- 用途 (use_case): 列表，例如 [\"gaming\"] 或 [\"video_editing\", \"ai\"] 或 [\"office\"]\n"
+                    "- 分辨率 (resolution): 字符串，例如 \"1080p\" 或 \"1440p\" 或 \"4k\"\n"
+                    "- CPU偏好 (cpu_preference): 字符串，例如 \"Intel\" 或 \"AMD\"\n"
+                    "- 显卡偏好 (gpu_preference): 字符串，例如 \"NVIDIA\" 或 \"AMD\" 或具体型号\n"
+                    "- 内存容量 (memory_gb): 整数\n"
+                    "- 存储容量 (storage_target_gb): 整数\n"
+                    "- 静音需求 (need_quiet): 布尔值，true 或 false\n"
+                    "- 品牌偏好 (prefer_brands): 列表，例如 [\"Intel\", \"NVIDIA\"]\n"
+                    "- 禁用品牌 (brand_blacklist): 列表，例如 [\"某品牌\"]\n"
+                    "- 优先级 (priority): 字符串，只能是 \"budget\"、\"balanced\" 或 \"performance\"\n\n"
+                    "重要规则：\n"
+                    "- 如果识别到某个字段，必须将对应的 *_set 字段设为 true\n"
+                    "- 如果用户说\"办公\"，设置 use_case=[\"office\"] 和 use_case_set=true\n"
+                    "- 如果用户说\"游戏\"，设置 use_case=[\"gaming\"] 和 use_case_set=true\n"
+                    "- 如果用户说\"剪辑\"，设置 use_case=[\"video_editing\"] 和 use_case_set=true\n"
+                    "- 如果用户说\"AI\"，设置 use_case=[\"ai\"] 和 use_case_set=true\n"
+                    "- 如果用户说\"预算9000\"，设置 budget_min=9000, budget_max=9000, budget_set=true\n"
+                    "- 如果用户说\"预算8000-10000\"，设置 budget_min=8000, budget_max=10000, budget_set=true\n"
+                    "- 判断是否继续提问：\n"
+                    "  * 如果用户说\"不用了\"、\"够了\"、\"就这样\"、\"不用再问\"、\"可以了\"、\"没问题\"、\"好的\"、\"行\"、\"OK\"、\"ok\"等表示结束的词，should_continue=false\n"
+                    "  * 如果用户说\"开始推荐\"、\"推荐吧\"、\"给我推荐\"等，should_continue=false\n"
+                    "  * 如果已收集信息中包含预算、用途、分辨率三个核心信息，可以考虑停止提问（should_continue=false）\n"
+                    "  * 否则继续提问（should_continue=true）\n"
+                    "- 提问策略：每次只问一个最关键的问题，不要一次问多个\n"
+                    "- 语气要求：{follow_style}\n"
+                    "- 直接输出JSON，不要markdown标记，不要包含任何解释性文字。\n\n"
+                    "当 should_continue=false 时：\n"
+                    "- 回复应该表示需求收集完成，系统将自动生成推荐配置\n"
+                    "- 例如：\"好的，我已经了解了您的需求。系统将根据您的需求自动生成推荐配置。\" 或 \"明白了，需求收集完成，现在为您生成配置方案。\"\n"
+                    "- 不要提及具体的硬件配置，只表示需求收集完成\n\n"
+                    "当 should_continue=true 时：\n"
+                    "- 回复应该包含一个最关键的问题\n"
+                    "- 例如：\"好的，预算9000元很明确。请问这台电脑主要用于什么用途呢？比如游戏、办公、视频剪辑还是AI训练？\"\n"
+                    "- 注意：如果已收集信息中已经包含某个字段，就不要再问这个问题\n\n"
+                    "输出格式：\n"
+                    "{{\n"
+                    "  \"requirement_update\": {{\n"
+                    "    \"use_case\": [\"office\"],\n"
+                    "    \"use_case_set\": true,\n"
+                    "    \"prefer_brands\": [\"Intel\"],\n"
+                    "    \"prefer_brands_set\": true,\n"
+                    "    ...\n"
+                    "  }},\n"
+                    "  \"reply\": \"你的回复内容\",\n"
+                    "  \"should_continue\": true/false\n"
+                    "}}",
                 ),
                 (
                     "human",
-                    "当前需求: {current}\n用户输入: {text}\n问题列表: {follow_up_text}",
+                    "已收集信息: {collected}\n用户本轮输入: {text}",
                 ),
             ]
         )
@@ -372,19 +414,33 @@ class RequirementExtractor:
             structured = llm.with_structured_output(RequirementUpdateWithReply)
             print(f"[PERF] Structured output setup in {time.time() - structured_start:.3f}s")
             
+            model_input = {
+                "collected": collected_summary,
+                "text": text,
+                "follow_style": follow_style,
+            }
+            print(f"\n{'='*60}")
+            print(f"[LLM INPUT] 对话式需求收集")
+            print(f"  已收集: {collected_summary}")
+            print(f"  用户输入: {text}")
+            print(f"{'='*60}\n")
+            
+            print(f"[DEBUG] About to invoke LLM...")
             invoke_start = time.time()
             result = invoke_with_turn_timeout(
                 lambda: invoke_with_rate_limit(
-                    lambda: (prompt | structured).invoke(
-                        {
-                            "current": current.model_dump_json(),
-                            "text": text,
-                            "follow_up_text": follow_up_text,
-                            "follow_style": follow_style,
-                        }
-                    )
+                    lambda: (prompt | structured).invoke(model_input)
                 )
             )
+            print(f"[DEBUG] LLM invoke completed successfully")
+            
+            print(f"\n{'='*60}")
+            print(f"[LLM OUTPUT] 对话式需求收集结果:")
+            print(f"  需求更新: {result.requirement_update.model_dump_json()[:300]}...")
+            print(f"  回复: {result.reply[:100]}...")
+            print(f"  继续提问: {result.should_continue}")
+            print(f"{'='*60}\n")
+            
             print(f"[PERF] Total extract_and_reply() call: {time.time() - start:.3f}s")
             return result
         except Exception as e:
@@ -395,7 +451,7 @@ class RequirementExtractor:
             print(f"[DEBUG] Traceback:\n{traceback.format_exc()}")
             update = self._extract_with_rules(text, current)
             reply = self._generate_fallback_reply(update, follow_up_questions, enthusiasm_level)
-            return RequirementUpdateWithReply(requirement_update=update, reply=reply)
+            return RequirementUpdateWithReply(requirement_update=update, reply=reply, should_continue=True)
 
     def _generate_fallback_reply(self, update: RequirementUpdate, follow_up_questions: List[str], enthusiasm_level: str) -> str:
         if follow_up_questions:
@@ -810,14 +866,75 @@ class RigForgeGraph:
         current = state.get("requirements") or UserRequirements()
         user_input = state["user_input"]
         last_assistant_reply = state.get("last_assistant_reply", "")
+        interaction_mode = state.get("interaction_mode", "chat")
+        enthusiasm_level = state.get("enthusiasm_level", "standard")
         
-        # 暂时屏蔽简单判断逻辑，所有回答都优先走大模型
-        # use_llm = self._should_use_llm(user_input, last_assistant_reply)
-        use_llm = True  # 强制使用 LLM
+        if interaction_mode == "chat":
+            return self._collect_requirements_chat_mode(state, current, user_input, last_assistant_reply, enthusiasm_level)
+        else:
+            return self._collect_requirements_component_mode(state, current, user_input, last_assistant_reply)
+
+    def _collect_requirements_chat_mode(self, state: GraphState, current: UserRequirements, user_input: str, last_assistant_reply: str, enthusiasm_level: str):
+        start_time = time.time()
         
         llm_start = time.time()
-        llm = self._runtime_llm(state.get("model_provider", "rules"), 0) if use_llm else None
-        print(f"[PERF] LLM setup took {time.time() - llm_start:.3f}s (use_llm={use_llm})")
+        llm = self._runtime_llm(state.get("model_provider", "rules"), 0)
+        print(f"[PERF] LLM setup took {time.time() - llm_start:.3f}s")
+        
+        extract_and_reply_start = time.time()
+        result = self.extractor.extract_and_reply(
+            user_input, 
+            current, 
+            llm=llm, 
+            enthusiasm_level=enthusiasm_level
+        )
+        print(f"[PERF] Extract and reply took {time.time() - extract_and_reply_start:.3f}s")
+        
+        print(f"[DEBUG] LLM result:")
+        print(f"  requirement_update: {result.requirement_update.model_dump_json()}")
+        print(f"  reply: {result.reply}")
+        print(f"  should_continue: {result.should_continue}")
+        
+        print(f"[DEBUG] Before merge:")
+        print(f"  Current budget: {current.budget_min} - {current.budget_max}")
+        print(f"  Current use_case: {current.use_case}")
+        print(f"  Current resolution: {current.resolution}")
+        print(f"  Update budget: {result.requirement_update.budget_min} - {result.requirement_update.budget_max}")
+        print(f"  Update use_case: {result.requirement_update.use_case}")
+        print(f"  Update resolution: {result.requirement_update.resolution}")
+        
+        merge_start = time.time()
+        merged = merge_requirements(current, result.requirement_update)
+        print(f"[PERF] Merge requirements took {time.time() - merge_start:.3f}s")
+        
+        print(f"[DEBUG] After merge:")
+        print(f"  Merged budget: {merged.budget_min} - {merged.budget_max}")
+        print(f"  Merged use_case: {merged.use_case}")
+        print(f"  Merged resolution: {merged.resolution}")
+        
+        route = "recommend" if not result.should_continue else "ask_more"
+        
+        print(f"[DEBUG] Route determined: {route}")
+        print(f"[DEBUG] should_continue: {result.should_continue}")
+        print(f"[DEBUG] response_text: {result.reply if result.should_continue else ''}")
+        
+        return {
+            "requirements": merged,
+            "follow_up_questions": [],
+            "route": route,
+            "high_cooperation": True,
+            "avoid_repeat_field": None,
+            "response_text": result.reply if result.should_continue else "",  # 只在继续提问时返回回复文本
+            "response_mode": "llm" if llm else "fallback",
+            "fallback_reason": None,
+        }
+
+    def _collect_requirements_component_mode(self, state: GraphState, current: UserRequirements, user_input: str, last_assistant_reply: str):
+        start_time = time.time()
+        
+        llm_start = time.time()
+        llm = self._runtime_llm(state.get("model_provider", "rules"), 0) if True else None
+        print(f"[PERF] LLM setup took {time.time() - llm_start:.3f}s")
         
         extract_start = time.time()
         try:
@@ -847,16 +964,6 @@ class RigForgeGraph:
         merge_start = time.time()
         merged = merge_requirements(current, update)
         print(f"[PERF] Merge requirements took {time.time() - merge_start:.3f}s")
-        
-        # 诊断日志：显示需求提取和合并结果
-        print(f"\n[DEBUG] 需求提取结果:")
-        print(f"  update.use_case = {update.use_case}")
-        print(f"  update.use_case_set = {update.use_case_set}")
-        print(f"  update.budget_set = {update.budget_set}")
-        print(f"[DEBUG] 合并后状态:")
-        print(f"  merged.use_case = {merged.use_case}")
-        print(f"  merged.use_case_set = {merged.use_case_set}")
-        print(f"  merged.budget_set = {merged.budget_set}")
         
         stop_followup = self._should_stop_followup(user_input)
         high_cooperation = self._is_high_cooperation(update)
@@ -951,32 +1058,53 @@ class RigForgeGraph:
 
     def recommend_build(self, state: GraphState):
         start = time.time()
+        
+        print(f"[DEBUG] recommend_build method started")
+        
         req = state["requirements"]
+        
+        print(f"[DEBUG] recommend_build called with requirements:")
+        print(f"  Budget: {req.budget_min} - {req.budget_max}")
+        print(f"  Use case: {req.use_case}")
+        print(f"  Resolution: {req.resolution}")
+        print(f"  All requirements: {req.model_dump_json()[:500]}...")
+        
         context_start = time.time()
+        print(f"[DEBUG] Calling recommendation_context...")
         _context = self.tool_map["recommendation_context"].invoke(req.model_dump())
         print(f"[PERF] recommendation_context took {time.time() - context_start:.3f}s")
         
         pick_start = time.time()
+        print(f"[DEBUG] Starting pick_build_from_candidates...")
         build = pick_build_from_candidates(req, self.tool_map["search_parts"])
         print(f"[PERF] pick_build_from_candidates took {time.time() - pick_start:.3f}s")
         
         fit_start = time.time()
+        print(f"[DEBUG] Calling ensure_budget_fit...")
         build = ensure_budget_fit(req, build)
         print(f"[PERF] ensure_budget_fit took {time.time() - fit_start:.3f}s")
         
+        print(f"[DEBUG] Build result: {build.model_dump_json()[:300]}...")
         print(f"[PERF] recommend_build total took {time.time() - start:.3f}s")
         return {"build": build}
 
     def validate_build(self, state: GraphState):
         start = time.time()
         build = state["build"]
+        
+        print(f"[DEBUG] validate_build called")
+        print(f"[DEBUG] Build: {build.model_dump_json()[:200]}...")
+        
         skus = []
         for key in ["cpu", "motherboard", "memory", "gpu", "psu", "case", "cooler"]:
             part = getattr(build, key)
             if part:
                 skus.append(part.sku)
+        
+        print(f"[DEBUG] SKUs: {skus}")
 
         if len(skus) < 7:
+            print(f"[DEBUG] Incomplete build, only {len(skus)} parts")
             print(f"[PERF] validate_build took {time.time() - start:.3f}s (incomplete build)")
             return {
                 "compatibility_issues": ["build generation incomplete, please provide a wider budget"],
@@ -984,6 +1112,7 @@ class RigForgeGraph:
             }
 
         compat_start = time.time()
+        print(f"[DEBUG] Calling check_compatibility...")
         issues = self.tool_map["check_compatibility"].invoke(
             {
                 "cpu_sku": build.cpu.sku,
@@ -996,23 +1125,171 @@ class RigForgeGraph:
             }
         )
         print(f"[PERF] check_compatibility took {time.time() - compat_start:.3f}s")
+        print(f"[DEBUG] Compatibility issues: {issues}")
         
         power_start = time.time()
+        print(f"[DEBUG] Calling estimate_power...")
         estimated_power = self.tool_map["estimate_power"].invoke({"parts": skus})
         print(f"[PERF] estimate_power took {time.time() - power_start:.3f}s")
+        print(f"[DEBUG] Estimated power: {estimated_power}")
         
         if build.total_price() > state["requirements"].budget_max:
-            issues.append(
-                f"Total price {build.total_price()} exceeds budget max {state['requirements'].budget_max}"
-            )
+            issue = f"Total price {build.total_price()} exceeds budget max {state['requirements'].budget_max}"
+            print(f"[DEBUG] Budget issue: {issue}")
+            issues.append(issue)
+        
         print(f"[PERF] validate_build total took {time.time() - start:.3f}s")
         return {
             "compatibility_issues": issues,
             "estimated_power": estimated_power,
         }
 
+    def _compose_recommendation_reply(self, state: GraphState, existing_reply: str):
+        """生成推荐配置的回复"""
+        start = time.time()
+        
+        print(f"[DEBUG] _compose_recommendation_reply called")
+        print(f"[DEBUG] Existing reply: {existing_reply[:200]}...")
+        
+        build = state["build"]
+        req = state["requirements"]
+        issues = state.get("compatibility_issues", [])
+        perf = self._estimate_performance_label(req)
+        
+        print(f"[DEBUG] Build: {build.model_dump_json()[:200]}...")
+        print(f"[DEBUG] Issues: {issues}")
+        print(f"[DEBUG] Perf: {perf}")
+        
+        level = state.get("enthusiasm_level", "standard")
+        effective_level = self._effective_enthusiasm_level(level, state.get("turn_number", 1))
+        follow_style, recommend_style = self._enthusiasm_instructions(effective_level)
+        
+        print(f"[DEBUG] Setting up LLM...")
+        llm_setup_start = time.time()
+        llm = self._runtime_llm(state.get("model_provider", "rules"), 0.2)
+        print(f"[PERF] LLM setup took {time.time() - llm_setup_start:.3f}s")
+        print(f"[DEBUG] LLM available: {llm is not None}")
+        
+        if llm:
+            try:
+                print(f"[DEBUG] Building recommendation prompt...")
+                prompt_start = time.time()
+                prompt = ChatPromptTemplate.from_messages(
+                    [
+                        (
+                            "system",
+                            "你是热情、靠谱的专业装机顾问。"
+                            "用中文输出，简洁、清楚、避免空话。"
+                            "{recommend_style}",
+                        ),
+                        (
+                            "human",
+                            "需求: {req}\n方案: {build}\n风险: {issues}\n总价: {price}\n功耗: {power}\n"
+                            "请输出: 1) 推荐摘要 2) 关键配件理由 3) 风险与替代建议。",
+                        ),
+                    ]
+                )
+                print(f"[PERF] recommend_prompt built in {time.time() - prompt_start:.3f}s")
+                
+                model_input = {
+                    "req": req.model_dump_json(),
+                    "build": build.model_dump_json(),
+                    "issues": issues,
+                    "price": build.total_price(),
+                    "power": state.get("estimated_power", 0),
+                    "recommend_style": recommend_style,
+                }
+                print(f"[DEBUG] Model input prepared")
+                
+                invoke_start = time.time()
+                print(f"[DEBUG] Invoking LLM for recommendation...")
+                recommendation_reply = invoke_with_rate_limit(
+                    lambda: invoke_with_turn_timeout(
+                        lambda: (prompt | llm).invoke(model_input).content
+                    )
+                )
+                print(f"[PERF] recommend LLM invoke took {time.time() - invoke_start:.3f}s")
+                print(f"[DEBUG] Recommendation reply: {recommendation_reply[:200]}...")
+                
+                combined_reply = f"{existing_reply}\n\n{recommendation_reply}"
+                print(f"[DEBUG] Combined reply length: {len(combined_reply)}")
+                print(f"[PERF] _compose_recommendation_reply total took {time.time() - start:.3f}s")
+                
+                return {
+                    "response_text": combined_reply,
+                    "response_mode": "llm",
+                    "fallback_reason": None,
+                    "template_history": state.get("template_history", {}),
+                }
+            except Exception as err:
+                print(f"[PERF] recommend LLM failed, falling back: {err}")
+                print(f"[DEBUG] Exception type: {type(err).__name__}")
+                import traceback
+                print(f"[DEBUG] Traceback:\n{traceback.format_exc()}")
+                fallback_start = time.time()
+                fallback_reply, _ = self._fallback_reply(
+                    build,
+                    issues,
+                    perf,
+                    effective_level,
+                    turn_number=state.get("turn_number", 1),
+                    user_input=state.get("user_input", ""),
+                    template_history=state.get("template_history", {}),
+                )
+                print(f"[PERF] recommend fallback took {time.time() - fallback_start:.3f}s")
+                
+                combined_reply = f"{existing_reply}\n\n{fallback_reply}"
+                print(f"[PERF] _compose_recommendation_reply total took {time.time() - start:.3f}s")
+                
+                return {
+                    "response_text": combined_reply,
+                    "response_mode": "fallback",
+                    "fallback_reason": self._classify_fallback_reason(err),
+                    "template_history": state.get("template_history", {}),
+                }
+        else:
+            print(f"[PERF] No LLM available, using fallback")
+            fallback_start = time.time()
+            fallback_reply, _ = self._fallback_reply(
+                build,
+                issues,
+                perf,
+                effective_level,
+                turn_number=state.get("turn_number", 1),
+                user_input=state.get("user_input", ""),
+                template_history=state.get("template_history", {}),
+            )
+            print(f"[PERF] recommend fallback (no LLM) took {time.time() - fallback_start:.3f}s")
+            
+            combined_reply = f"{existing_reply}\n\n{fallback_reply}"
+            print(f"[PERF] _compose_recommendation_reply total took {time.time() - start:.3f}s")
+            
+            return {
+                "response_text": combined_reply,
+                "response_mode": "fallback",
+                "fallback_reason": "no_model_config",
+                "template_history": state.get("template_history", {}),
+            }
+
     def compose_reply(self, state: GraphState):
         start = time.time()
+        interaction_mode = state.get("interaction_mode", "chat")
+        route = state.get("route", "ask_more")
+        
+        if interaction_mode == "chat" and state.get("response_text"):
+            existing_reply = state.get("response_text", "")
+            if route == "recommend":
+                print(f"[DEBUG] Chat mode with route=recommend, generating recommendation reply")
+                print(f"[DEBUG] Existing reply: {existing_reply}")
+                return self._compose_recommendation_reply(state, existing_reply)
+            else:
+                print(f"[PERF] compose_reply skipped, using existing response_text (chat mode)")
+                return {
+                    "response_text": existing_reply,
+                    "response_mode": state.get("response_mode", "fallback"),
+                    "fallback_reason": state.get("fallback_reason"),
+                    "template_history": state.get("template_history", {}),
+                }
         
         # 判断是否需要 LLM 生成追问回复
         user_input = state.get("user_input", "")
@@ -1205,6 +1482,7 @@ class RigForgeGraph:
         last_assistant_reply: str = "",
         model_provider: Literal["zhipu", "openrouter", "rules"] = "rules",
         template_history: Optional[Dict[str, List[int]]] = None,
+        interaction_mode: Literal["chat", "component"] = "chat",
     ) -> ChatResponse:
         req = requirements or UserRequirements()
         history = deepcopy(template_history) if template_history is not None else {}
@@ -1232,6 +1510,7 @@ class RigForgeGraph:
             "model_provider": model_provider,
             "template_history": history,
             "avoid_repeat_field": None,
+            "interaction_mode": interaction_mode,
         }
         out = self.graph.invoke(initial)
         turn_provider: Literal["zhipu", "openrouter", "rules"] = (

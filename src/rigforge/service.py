@@ -119,6 +119,7 @@ class ChatService:
                 last_assistant_reply=last_assistant_reply,
                 model_provider=session.model_provider,
                 template_history=session.template_history,
+                interaction_mode=session.interaction_mode,
             )
             session.requirements = result.requirements
             session.template_history = result.template_history
