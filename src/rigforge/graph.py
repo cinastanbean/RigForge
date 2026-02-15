@@ -130,10 +130,37 @@ def invoke_with_rate_limit(invoke_fn):
 def invoke_with_turn_timeout(invoke_fn, timeout_seconds: Optional[float] = None):
     start = time.time()
     try:
-        result = invoke_fn()
-        elapsed = time.time() - start
-        print(f"[PERF] LLM call completed in {elapsed:.3f}s")
-        return result
+        if timeout_seconds:
+            import threading
+            result = [None]
+            exception = [None]
+            
+            def worker():
+                try:
+                    result[0] = invoke_fn()
+                except Exception as e:
+                    exception[0] = e
+            
+            thread = threading.Thread(target=worker)
+            thread.start()
+            thread.join(timeout=timeout_seconds)
+            
+            if thread.is_alive():
+                elapsed = time.time() - start
+                print(f"[PERF] LLM call timed out after {elapsed:.3f}s (timeout={timeout_seconds}s)")
+                raise TimeoutError(f"LLM call timed out after {timeout_seconds}s")
+            
+            if exception[0]:
+                raise exception[0]
+            
+            elapsed = time.time() - start
+            print(f"[PERF] LLM call completed in {elapsed:.3f}s")
+            return result[0]
+        else:
+            result = invoke_fn()
+            elapsed = time.time() - start
+            print(f"[PERF] LLM call completed in {elapsed:.3f}s")
+            return result
     except Exception as err:
         elapsed = time.time() - start
         print(f"[PERF] LLM call failed after {elapsed:.3f}s: {err}")
@@ -374,7 +401,8 @@ class RequirementExtractor:
                     "- 如果用户说\"预算8000-10000\"，设置 budget_min=8000, budget_max=10000, budget_set=true\n"
                     "- 判断是否继续提问：\n"
                     "  * 如果用户说\"不用了\"、\"够了\"、\"就这样\"、\"不用再问\"、\"可以了\"、\"没问题\"、\"好的\"、\"行\"、\"OK\"、\"ok\"等表示结束的词，should_continue=false\n"
-                    "  * 如果用户说\"开始推荐\"、\"推荐吧\"、\"给我推荐\"等，should_continue=false\n"
+                    "  * 如果用户说\"开始推荐\"、\"推荐吧\"、\"给我推荐\"、\"随便推荐\"、\"随便给我推荐\"、\"随便给我推荐个吧\"等，should_continue=false\n"
+                    "  * 如果用户说\"随便\"、\"都可以\"、\"你看着办\"、\"你决定\"等表示让系统决定，should_continue=false\n"
                     "  * 如果已收集信息中包含预算、用途、分辨率三个核心信息，可以考虑停止提问（should_continue=false）\n"
                     "  * 否则继续提问（should_continue=true）\n"
                     "- 提问策略：每次只问一个最关键的问题，不要一次问多个\n"
@@ -430,7 +458,8 @@ class RequirementExtractor:
             result = invoke_with_turn_timeout(
                 lambda: invoke_with_rate_limit(
                     lambda: (prompt | structured).invoke(model_input)
-                )
+                ),
+                timeout_seconds=60.0
             )
             print(f"[DEBUG] LLM invoke completed successfully")
             
@@ -912,11 +941,24 @@ class RigForgeGraph:
         print(f"  Merged use_case: {merged.use_case}")
         print(f"  Merged resolution: {merged.resolution}")
         
-        route = "recommend" if not result.should_continue else "ask_more"
+        turn_number = state.get("turn_number", 1)
+        max_turns = 10
         
-        print(f"[DEBUG] Route determined: {route}")
+        # 双重验证机制：规则引擎判断
+        rule_based_route = self._rule_based_route_decision(merged, user_input, turn_number, max_turns)
+        
+        # 大模型判断
+        llm_based_route = "recommend" if not result.should_continue else "ask_more"
+        
+        print(f"[DEBUG] Rule-based route: {rule_based_route}")
+        print(f"[DEBUG] LLM-based route: {llm_based_route}")
+        
+        # 最终路由判断：优先使用规则引擎的判断
+        route = rule_based_route if rule_based_route == "recommend" else llm_based_route
+        
+        print(f"[DEBUG] Final route: {route}")
         print(f"[DEBUG] should_continue: {result.should_continue}")
-        print(f"[DEBUG] response_text: {result.reply if result.should_continue else ''}")
+        print(f"[DEBUG] response_text: {result.reply if route == 'ask_more' else ''}")
         
         return {
             "requirements": merged,
@@ -924,10 +966,52 @@ class RigForgeGraph:
             "route": route,
             "high_cooperation": True,
             "avoid_repeat_field": None,
-            "response_text": result.reply if result.should_continue else "",  # 只在继续提问时返回回复文本
+            "response_text": result.reply if route == "ask_more" else "",  # 只在继续提问时返回回复文本
             "response_mode": "llm" if llm else "fallback",
             "fallback_reason": None,
         }
+
+    def _rule_based_route_decision(self, merged: UserRequirements, user_input: str, turn_number: int, max_turns: int) -> str:
+        """规则引擎判断是否应该结束对话"""
+        
+        # 1. 检查对话轮数是否超过限制
+        if turn_number >= max_turns:
+            print(f"[DEBUG] Rule: Turn number {turn_number} >= max_turns {max_turns}, recommend")
+            return "recommend"
+        
+        # 2. 检查用户输入是否包含结束对话的关键词
+        stop_keywords = [
+            "不用了", "够了", "就这样", "不用再问", "可以了", "没问题", 
+            "好的", "行", "OK", "ok", "开始推荐", "推荐吧", "给我推荐", 
+            "随便推荐", "随便给我推荐", "随便给我推荐个吧", "随便", 
+            "都可以", "你看着办", "你决定"
+        ]
+        if any(keyword in user_input for keyword in stop_keywords):
+            print(f"[DEBUG] Rule: Stop keyword found in user input, recommend")
+            return "recommend"
+        
+        # 3. 检查是否收集到足够的关键信息（预算、用途、分辨率）
+        key_fields_collected = 0
+        if merged.budget_set:
+            key_fields_collected += 1
+        if merged.use_case_set:
+            key_fields_collected += 1
+        if merged.resolution_set:
+            key_fields_collected += 1
+        
+        # 如果收集到3个关键信息，可以考虑结束对话
+        if key_fields_collected >= 3:
+            print(f"[DEBUG] Rule: {key_fields_collected} key fields collected, recommend")
+            return "recommend"
+        
+        # 如果收集到2个关键信息，且对话轮数较多，也可以考虑结束对话
+        if key_fields_collected >= 2 and turn_number >= 5:
+            print(f"[DEBUG] Rule: {key_fields_collected} key fields collected and turn_number {turn_number} >= 5, recommend")
+            return "recommend"
+        
+        # 否则继续提问
+        print(f"[DEBUG] Rule: {key_fields_collected} key fields collected, ask_more")
+        return "ask_more"
 
     def _collect_requirements_component_mode(self, state: GraphState, current: UserRequirements, user_input: str, last_assistant_reply: str):
         start_time = time.time()
@@ -991,6 +1075,14 @@ class RigForgeGraph:
         else:
             route = "ask_more" if missing else "recommend"
             questions = missing
+
+        # 安全机制：如果对话轮数超过限制，强制结束对话
+        turn_number = state.get("turn_number", 1)
+        max_turns = 10
+        if route == "ask_more" and turn_number >= max_turns:
+            print(f"[DEBUG] Turn number {turn_number} >= max_turns {max_turns}, forcing route to recommend")
+            route = "recommend"
+            questions = []
 
         avoid_repeat_field = None
         if (
@@ -1205,7 +1297,8 @@ class RigForgeGraph:
                 print(f"[DEBUG] Invoking LLM for recommendation...")
                 recommendation_reply = invoke_with_rate_limit(
                     lambda: invoke_with_turn_timeout(
-                        lambda: (prompt | llm).invoke(model_input).content
+                        lambda: (prompt | llm).invoke(model_input).content,
+                        timeout_seconds=60.0
                     )
                 )
                 print(f"[PERF] recommend LLM invoke took {time.time() - invoke_start:.3f}s")
@@ -1341,7 +1434,8 @@ class RigForgeGraph:
                         lambda: invoke_with_turn_timeout(
                             lambda: (follow_prompt | llm).invoke(
                                 model_input
-                            ).content
+                            ).content,
+                            timeout_seconds=60.0
                         )
                     )
                     
@@ -1427,7 +1521,8 @@ class RigForgeGraph:
                                 "power": state.get("estimated_power", 0),
                                 "recommend_style": recommend_style,
                             }
-                        ).content
+                        ).content,
+                        timeout_seconds=60.0
                     )
                 )
                 print(f"[PERF] recommend LLM invoke took {time.time() - invoke_start:.3f}s")
