@@ -13,7 +13,7 @@ try:
 except Exception:  # pragma: no cover - optional dependency at runtime
     Redis = None
 
-from .graph import RigForgeGraph
+from .graph import RigForgeGraph, PerformanceTracker
 from .schemas import ChatResponse, UserRequirements
 
 
@@ -90,6 +90,9 @@ class ChatService:
         with session_lock:
             now = time.monotonic()
             self._session_last_seen[session_id] = now
+            
+            tracker = PerformanceTracker(f"chat session {session_id}")
+            
             session = self.sessions.get(session_id)
             if session is None:
                 session = self._load_session_state(session_id)
@@ -128,6 +131,9 @@ class ChatService:
                 session.has_recommendation = True
             session.history.append({"role": "user", "content": message})
             session.history.append({"role": "assistant", "content": result.reply})
+            
+            tracker.finish()
+            
             self._record_metric_event(
                 session_id=session_id,
                 enthusiasm_level=session.enthusiasm_level,

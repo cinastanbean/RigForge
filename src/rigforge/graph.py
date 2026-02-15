@@ -127,6 +127,47 @@ def invoke_with_rate_limit(invoke_fn):
     return invoke_fn()
 
 
+class PerformanceTracker:
+    def __init__(self, name: str):
+        self.name = name
+        self.start_time = time.time()
+        self.sub_timers: Dict[str, float] = {}
+        self.current_timer: Optional[str] = None
+        self.current_start: Optional[float] = None
+        
+    def start(self, timer_name: str):
+        if self.current_timer is not None:
+            self.sub_timers[self.current_timer] = self.sub_timers.get(self.current_timer, 0) + (time.time() - self.current_start)
+        self.current_timer = timer_name
+        self.current_start = time.time()
+        
+    def end(self, timer_name: Optional[str] = None):
+        if self.current_timer is not None:
+            self.sub_timers[self.current_timer] = self.sub_timers.get(self.current_timer, 0) + (time.time() - self.current_start)
+            self.current_timer = None
+            self.current_start = None
+        
+        if timer_name:
+            self.start(timer_name)
+    
+    def finish(self):
+        if self.current_timer is not None:
+            self.sub_timers[self.current_timer] = self.sub_timers.get(self.current_timer, 0) + (time.time() - self.current_start)
+            self.current_timer = None
+            self.current_start = None
+        
+        total_time = time.time() - self.start_time
+        print(f"\n{'='*60}")
+        print(f"[PERF] {self.name} completed in {total_time:.3f}s")
+        if self.sub_timers:
+            sorted_timers = sorted(self.sub_timers.items(), key=lambda x: x[1], reverse=True)
+            for timer_name, timer_time in sorted_timers:
+                percentage = (timer_time / total_time) * 100 if total_time > 0 else 0
+                print(f"  - {timer_name}: {timer_time:.3f}s ({percentage:.1f}%)")
+        print(f"{'='*60}\n")
+        return total_time
+
+
 def invoke_with_turn_timeout(invoke_fn, timeout_seconds: Optional[float] = None):
     start = time.time()
     try:
@@ -154,12 +195,9 @@ def invoke_with_turn_timeout(invoke_fn, timeout_seconds: Optional[float] = None)
                 raise exception[0]
             
             elapsed = time.time() - start
-            print(f"[PERF] LLM call completed in {elapsed:.3f}s")
             return result[0]
         else:
             result = invoke_fn()
-            elapsed = time.time() - start
-            print(f"[PERF] LLM call completed in {elapsed:.3f}s")
             return result
     except Exception as err:
         elapsed = time.time() - start
@@ -891,7 +929,8 @@ class RigForgeGraph:
         return True
 
     def collect_requirements(self, state: GraphState):
-        start_time = time.time()
+        tracker = PerformanceTracker("collect_requirements")
+        
         current = state.get("requirements") or UserRequirements()
         user_input = state["user_input"]
         last_assistant_reply = state.get("last_assistant_reply", "")
@@ -899,66 +938,40 @@ class RigForgeGraph:
         enthusiasm_level = state.get("enthusiasm_level", "standard")
         
         if interaction_mode == "chat":
-            return self._collect_requirements_chat_mode(state, current, user_input, last_assistant_reply, enthusiasm_level)
+            result = self._collect_requirements_chat_mode(state, current, user_input, last_assistant_reply, enthusiasm_level, tracker)
         else:
-            return self._collect_requirements_component_mode(state, current, user_input, last_assistant_reply)
+            result = self._collect_requirements_component_mode(state, current, user_input, last_assistant_reply, tracker)
+        
+        tracker.finish()
+        return result
 
-    def _collect_requirements_chat_mode(self, state: GraphState, current: UserRequirements, user_input: str, last_assistant_reply: str, enthusiasm_level: str):
-        start_time = time.time()
-        
-        llm_start = time.time()
+    def _collect_requirements_chat_mode(self, state: GraphState, current: UserRequirements, user_input: str, last_assistant_reply: str, enthusiasm_level: str, tracker: PerformanceTracker):
+        tracker.start("LLM setup")
         llm = self._runtime_llm(state.get("model_provider", "rules"), 0)
-        print(f"[PERF] LLM setup took {time.time() - llm_start:.3f}s")
+        tracker.end()
         
-        extract_and_reply_start = time.time()
+        tracker.start("extract_and_reply")
         result = self.extractor.extract_and_reply(
             user_input, 
             current, 
             llm=llm, 
             enthusiasm_level=enthusiasm_level
         )
-        print(f"[PERF] Extract and reply took {time.time() - extract_and_reply_start:.3f}s")
+        tracker.end()
         
-        print(f"[DEBUG] LLM result:")
-        print(f"  requirement_update: {result.requirement_update.model_dump_json()}")
-        print(f"  reply: {result.reply}")
-        print(f"  should_continue: {result.should_continue}")
-        
-        print(f"[DEBUG] Before merge:")
-        print(f"  Current budget: {current.budget_min} - {current.budget_max}")
-        print(f"  Current use_case: {current.use_case}")
-        print(f"  Current resolution: {current.resolution}")
-        print(f"  Update budget: {result.requirement_update.budget_min} - {result.requirement_update.budget_max}")
-        print(f"  Update use_case: {result.requirement_update.use_case}")
-        print(f"  Update resolution: {result.requirement_update.resolution}")
-        
-        merge_start = time.time()
+        tracker.start("merge_requirements")
         merged = merge_requirements(current, result.requirement_update)
-        print(f"[PERF] Merge requirements took {time.time() - merge_start:.3f}s")
+        tracker.end()
         
-        print(f"[DEBUG] After merge:")
-        print(f"  Merged budget: {merged.budget_min} - {merged.budget_max}")
-        print(f"  Merged use_case: {merged.use_case}")
-        print(f"  Merged resolution: {merged.resolution}")
-        
+        tracker.start("route_decision")
         turn_number = state.get("turn_number", 1)
         max_turns = 10
         
-        # 双重验证机制：规则引擎判断
         rule_based_route = self._rule_based_route_decision(merged, user_input, turn_number, max_turns)
-        
-        # 大模型判断
         llm_based_route = "recommend" if not result.should_continue else "ask_more"
         
-        print(f"[DEBUG] Rule-based route: {rule_based_route}")
-        print(f"[DEBUG] LLM-based route: {llm_based_route}")
-        
-        # 最终路由判断：优先使用规则引擎的判断
         route = rule_based_route if rule_based_route == "recommend" else llm_based_route
-        
-        print(f"[DEBUG] Final route: {route}")
-        print(f"[DEBUG] should_continue: {result.should_continue}")
-        print(f"[DEBUG] response_text: {result.reply if route == 'ask_more' else ''}")
+        tracker.end()
         
         return {
             "requirements": merged,
@@ -966,7 +979,7 @@ class RigForgeGraph:
             "route": route,
             "high_cooperation": True,
             "avoid_repeat_field": None,
-            "response_text": result.reply if route == "ask_more" else "",  # 只在继续提问时返回回复文本
+            "response_text": result.reply if route == "ask_more" else "",
             "response_mode": "llm" if llm else "fallback",
             "fallback_reason": None,
         }
@@ -1013,25 +1026,23 @@ class RigForgeGraph:
         print(f"[DEBUG] Rule: {key_fields_collected} key fields collected, ask_more")
         return "ask_more"
 
-    def _collect_requirements_component_mode(self, state: GraphState, current: UserRequirements, user_input: str, last_assistant_reply: str):
-        start_time = time.time()
-        
-        llm_start = time.time()
+    def _collect_requirements_component_mode(self, state: GraphState, current: UserRequirements, user_input: str, last_assistant_reply: str, tracker: PerformanceTracker):
+        tracker.start("LLM setup")
         llm = self._runtime_llm(state.get("model_provider", "rules"), 0) if True else None
-        print(f"[PERF] LLM setup took {time.time() - llm_start:.3f}s")
+        tracker.end()
         
-        extract_start = time.time()
+        tracker.start("extract")
         try:
             update = self.extractor.extract(user_input, current, llm=llm)
         except TypeError:
             update = self.extractor.extract(user_input, current)
-        print(f"[PERF] Extract took {time.time() - extract_start:.3f}s")
+        tracker.end()
         
-        guards_start = time.time()
+        tracker.start("guards_and_normalization")
         update = self._apply_keyword_guards(update, user_input)
         update = self._apply_contextual_short_answer(update, user_input, last_assistant_reply)
         update = self._normalize_update_flags(update)
-        print(f"[PERF] Guards and normalization took {time.time() - guards_start:.3f}s")
+        tracker.end()
         
         lower = user_input.lower()
         if update.budget_max is None and any(
@@ -1045,10 +1056,11 @@ class RigForgeGraph:
         if update.priority is None and any(k in lower for k in ["性能优先", "更强", "拉满"]):
             update.priority = "performance"
         
-        merge_start = time.time()
+        tracker.start("merge_requirements")
         merged = merge_requirements(current, update)
-        print(f"[PERF] Merge requirements took {time.time() - merge_start:.3f}s")
+        tracker.end()
         
+        tracker.start("route_decision")
         stop_followup = self._should_stop_followup(user_input)
         high_cooperation = self._is_high_cooperation(update)
 
@@ -1080,7 +1092,6 @@ class RigForgeGraph:
         turn_number = state.get("turn_number", 1)
         max_turns = 10
         if route == "ask_more" and turn_number >= max_turns:
-            print(f"[DEBUG] Turn number {turn_number} >= max_turns {max_turns}, forcing route to recommend")
             route = "recommend"
             questions = []
 
@@ -1093,6 +1104,9 @@ class RigForgeGraph:
             last_field = self._infer_last_question_field(last_assistant_reply)
             if last_field in questions:
                 avoid_repeat_field = last_field
+        
+        tracker.end()
+        
         return {
             "requirements": merged,
             "follow_up_questions": questions,
@@ -1149,62 +1163,43 @@ class RigForgeGraph:
         return {"follow_up_questions": questions}
 
     def recommend_build(self, state: GraphState):
-        start = time.time()
-        
-        print(f"[DEBUG] recommend_build method started")
+        tracker = PerformanceTracker("recommend_build")
         
         req = state["requirements"]
         
-        print(f"[DEBUG] recommend_build called with requirements:")
-        print(f"  Budget: {req.budget_min} - {req.budget_max}")
-        print(f"  Use case: {req.use_case}")
-        print(f"  Resolution: {req.resolution}")
-        print(f"  All requirements: {req.model_dump_json()[:500]}...")
-        
-        context_start = time.time()
-        print(f"[DEBUG] Calling recommendation_context...")
+        tracker.start("recommendation_context")
         _context = self.tool_map["recommendation_context"].invoke(req.model_dump())
-        print(f"[PERF] recommendation_context took {time.time() - context_start:.3f}s")
+        tracker.end()
         
-        pick_start = time.time()
-        print(f"[DEBUG] Starting pick_build_from_candidates...")
+        tracker.start("pick_build_from_candidates")
         build = pick_build_from_candidates(req, self.tool_map["search_parts"])
-        print(f"[PERF] pick_build_from_candidates took {time.time() - pick_start:.3f}s")
+        tracker.end()
         
-        fit_start = time.time()
-        print(f"[DEBUG] Calling ensure_budget_fit...")
+        tracker.start("ensure_budget_fit")
         build = ensure_budget_fit(req, build)
-        print(f"[PERF] ensure_budget_fit took {time.time() - fit_start:.3f}s")
+        tracker.end()
         
-        print(f"[DEBUG] Build result: {build.model_dump_json()[:300]}...")
-        print(f"[PERF] recommend_build total took {time.time() - start:.3f}s")
+        tracker.finish()
         return {"build": build}
 
     def validate_build(self, state: GraphState):
-        start = time.time()
+        tracker = PerformanceTracker("validate_build")
         build = state["build"]
-        
-        print(f"[DEBUG] validate_build called")
-        print(f"[DEBUG] Build: {build.model_dump_json()[:200]}...")
         
         skus = []
         for key in ["cpu", "motherboard", "memory", "gpu", "psu", "case", "cooler"]:
             part = getattr(build, key)
             if part:
                 skus.append(part.sku)
-        
-        print(f"[DEBUG] SKUs: {skus}")
 
         if len(skus) < 7:
-            print(f"[DEBUG] Incomplete build, only {len(skus)} parts")
-            print(f"[PERF] validate_build took {time.time() - start:.3f}s (incomplete build)")
+            tracker.finish()
             return {
                 "compatibility_issues": ["build generation incomplete, please provide a wider budget"],
                 "estimated_power": 0,
             }
 
-        compat_start = time.time()
-        print(f"[DEBUG] Calling check_compatibility...")
+        tracker.start("check_compatibility")
         issues = self.tool_map["check_compatibility"].invoke(
             {
                 "cpu_sku": build.cpu.sku,
@@ -1216,21 +1211,17 @@ class RigForgeGraph:
                 "cooler_sku": build.cooler.sku,
             }
         )
-        print(f"[PERF] check_compatibility took {time.time() - compat_start:.3f}s")
-        print(f"[DEBUG] Compatibility issues: {issues}")
+        tracker.end()
         
-        power_start = time.time()
-        print(f"[DEBUG] Calling estimate_power...")
+        tracker.start("estimate_power")
         estimated_power = self.tool_map["estimate_power"].invoke({"parts": skus})
-        print(f"[PERF] estimate_power took {time.time() - power_start:.3f}s")
-        print(f"[DEBUG] Estimated power: {estimated_power}")
+        tracker.end()
         
         if build.total_price() > state["requirements"].budget_max:
             issue = f"Total price {build.total_price()} exceeds budget max {state['requirements'].budget_max}"
-            print(f"[DEBUG] Budget issue: {issue}")
             issues.append(issue)
         
-        print(f"[PERF] validate_build total took {time.time() - start:.3f}s")
+        tracker.finish()
         return {
             "compatibility_issues": issues,
             "estimated_power": estimated_power,
@@ -1238,34 +1229,24 @@ class RigForgeGraph:
 
     def _compose_recommendation_reply(self, state: GraphState, existing_reply: str):
         """生成推荐配置的回复"""
-        start = time.time()
-        
-        print(f"[DEBUG] _compose_recommendation_reply called")
-        print(f"[DEBUG] Existing reply: {existing_reply[:200]}...")
+        tracker = PerformanceTracker("_compose_recommendation_reply")
         
         build = state["build"]
         req = state["requirements"]
         issues = state.get("compatibility_issues", [])
         perf = self._estimate_performance_label(req)
         
-        print(f"[DEBUG] Build: {build.model_dump_json()[:200]}...")
-        print(f"[DEBUG] Issues: {issues}")
-        print(f"[DEBUG] Perf: {perf}")
-        
         level = state.get("enthusiasm_level", "standard")
         effective_level = self._effective_enthusiasm_level(level, state.get("turn_number", 1))
         follow_style, recommend_style = self._enthusiasm_instructions(effective_level)
         
-        print(f"[DEBUG] Setting up LLM...")
-        llm_setup_start = time.time()
+        tracker.start("LLM setup")
         llm = self._runtime_llm(state.get("model_provider", "rules"), 0.2)
-        print(f"[PERF] LLM setup took {time.time() - llm_setup_start:.3f}s")
-        print(f"[DEBUG] LLM available: {llm is not None}")
+        tracker.end()
         
         if llm:
             try:
-                print(f"[DEBUG] Building recommendation prompt...")
-                prompt_start = time.time()
+                tracker.start("prompt building")
                 prompt = ChatPromptTemplate.from_messages(
                     [
                         (
@@ -1281,7 +1262,7 @@ class RigForgeGraph:
                         ),
                     ]
                 )
-                print(f"[PERF] recommend_prompt built in {time.time() - prompt_start:.3f}s")
+                tracker.end()
                 
                 model_input = {
                     "req": req.model_dump_json(),
@@ -1291,23 +1272,19 @@ class RigForgeGraph:
                     "power": state.get("estimated_power", 0),
                     "recommend_style": recommend_style,
                 }
-                print(f"[DEBUG] Model input prepared")
                 
-                invoke_start = time.time()
-                print(f"[DEBUG] Invoking LLM for recommendation...")
+                tracker.start("LLM invoke")
                 recommendation_reply = invoke_with_rate_limit(
                     lambda: invoke_with_turn_timeout(
                         lambda: (prompt | llm).invoke(model_input).content,
-                        timeout_seconds=60.0
+                        timeout_seconds=120.0
                     )
                 )
-                print(f"[PERF] recommend LLM invoke took {time.time() - invoke_start:.3f}s")
-                print(f"[DEBUG] Recommendation reply: {recommendation_reply[:200]}...")
+                tracker.end()
                 
                 combined_reply = f"{existing_reply}\n\n{recommendation_reply}"
-                print(f"[DEBUG] Combined reply length: {len(combined_reply)}")
-                print(f"[PERF] _compose_recommendation_reply total took {time.time() - start:.3f}s")
                 
+                tracker.finish()
                 return {
                     "response_text": combined_reply,
                     "response_mode": "llm",
