@@ -59,7 +59,6 @@ function setRequirements(req) {
     ["预算区间", `${req.budget_min} - ${req.budget_max} 元`],
     ["用途", (req.use_case || []).join(", ") || "未明确"],
     ["分辨率", req.resolution || "未明确"],
-    ["显示器", req.need_monitor === null ? "未确认" : req.need_monitor ? "需要" : "不需要"],
     ["存储目标", req.storage_target_gb ? `${req.storage_target_gb}GB` : "未确认"],
     ["CPU偏好", req.cpu_preference || "未明确"],
     ["推荐策略", req.priority || "balanced"],

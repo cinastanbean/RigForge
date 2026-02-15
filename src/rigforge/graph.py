@@ -7,7 +7,6 @@ import time
 import json
 import hashlib
 from copy import deepcopy
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from pathlib import Path
 from typing import Annotated, Dict, List, Literal, Optional, TypedDict
 
@@ -58,7 +57,6 @@ def _canon_brand_list(values: List[str] | None) -> List[str] | None:
 
 
 def build_llm(provider: Literal["zhipu", "openrouter", "openai"], temperature: float):
-    timeout_seconds = float(os.getenv("LLM_TIMEOUT_SECONDS", "12"))
     max_retries = int(os.getenv("LLM_MAX_RETRIES", "0"))
 
     if provider == "openrouter":
@@ -72,7 +70,7 @@ def build_llm(provider: Literal["zhipu", "openrouter", "openai"], temperature: f
             temperature=temperature,
             api_key=openrouter_key,
             base_url=base_url,
-            timeout=timeout_seconds,
+            timeout=None,
             max_retries=max_retries,
         )
 
@@ -87,7 +85,7 @@ def build_llm(provider: Literal["zhipu", "openrouter", "openai"], temperature: f
             temperature=temperature,
             api_key=zhipu_key,
             base_url=base_url,
-            timeout=timeout_seconds,
+            timeout=None,
             max_retries=max_retries,
         )
 
@@ -100,7 +98,7 @@ def build_llm(provider: Literal["zhipu", "openrouter", "openai"], temperature: f
             model=model,
             temperature=temperature,
             api_key=openai_key,
-            timeout=timeout_seconds,
+            timeout=None,
             max_retries=max_retries,
         )
 
@@ -109,29 +107,37 @@ def build_llm(provider: Literal["zhipu", "openrouter", "openai"], temperature: f
 
 def invoke_with_rate_limit(invoke_fn):
     global _LAST_LLM_CALL_AT
+    
+    rate_limit_enabled = os.getenv("LLM_RATE_LIMIT_ENABLED", "false").lower() == "true"
+    
+    if not rate_limit_enabled:
+        return invoke_fn()
+    
     min_interval = float(os.getenv("LLM_MIN_INTERVAL_SECONDS", "1.0"))
+    start = time.time()
     with _LLM_CALL_LOCK:
         now = time.monotonic()
         target_at = max(now, _LAST_LLM_CALL_AT + min_interval)
         _LAST_LLM_CALL_AT = target_at
     wait = max(0.0, target_at - time.monotonic())
     if wait > 0:
+        print(f"[PERF] Rate limit wait: {wait:.3f}s")
         time.sleep(wait)
+    print(f"[PERF] Rate limit overhead: {time.time() - start:.3f}s")
     return invoke_fn()
 
 
 def invoke_with_turn_timeout(invoke_fn, timeout_seconds: Optional[float] = None):
-    if timeout_seconds is None:
-        timeout_seconds = float(os.getenv("LLM_TURN_TIMEOUT_SECONDS", "5"))
-    executor = ThreadPoolExecutor(max_workers=1)
-    future = executor.submit(invoke_fn)
+    start = time.time()
     try:
-        return future.result(timeout=timeout_seconds)
-    except FuturesTimeoutError as err:
-        future.cancel()
-        raise TimeoutError(f"LLM call timed out after {timeout_seconds}s") from err
-    finally:
-        executor.shutdown(wait=False, cancel_futures=True)
+        result = invoke_fn()
+        elapsed = time.time() - start
+        print(f"[PERF] LLM call completed in {elapsed:.3f}s")
+        return result
+    except Exception as err:
+        elapsed = time.time() - start
+        print(f"[PERF] LLM call failed after {elapsed:.3f}s: {err}")
+        raise
 
 
 class GraphState(TypedDict):
@@ -160,16 +166,21 @@ class RequirementExtractor:
         if llm is None:
             return self._extract_with_rules(text, current)
 
+        start = time.time()
+        
         prompt = ChatPromptTemplate.from_messages(
             [
                 (
                     "system",
                     "你是PC装机需求提取器。"
                     "从用户话术里提取预算、用途、分辨率、品牌偏好、禁用品牌、机箱尺寸、推荐优先级、"
-                    "是否需要显示器、存储容量需求、静音偏好、CPU偏好、游戏名称。"
+                    "存储容量需求、静音偏好、CPU偏好、游戏名称。"
                     "priority 取值: budget/balanced/performance。"
                     "如果识别到对应信息，请把 *_set 标记为 true。"
-                    "missing_fields 仅包含还不明确的关键字段: budget/use_case/resolution/monitor/storage/noise。",
+                    "missing_fields 仅包含还不明确的关键字段: budget/use_case/resolution/storage/noise。"
+                    "重要：直接输出 JSON，不要使用 markdown 代码块，不要包含 ```json 或 ``` 标记。"
+                    "只输出 JSON，不要包含任何解释性文字、注释或额外内容。"
+                    "保持 JSON 简洁，未识别的字段留空或设为默认值。",
                 ),
                 (
                     "human",
@@ -177,16 +188,29 @@ class RequirementExtractor:
                 ),
             ]
         )
+        print(f"[PERF] Prompt built in {time.time() - start:.3f}s")
+        
         try:
+            structured_start = time.time()
             structured = llm.with_structured_output(RequirementUpdate)
-            return invoke_with_turn_timeout(
+            print(f"[PERF] Structured output setup in {time.time() - structured_start:.3f}s")
+            
+            invoke_start = time.time()
+            result = invoke_with_turn_timeout(
                 lambda: invoke_with_rate_limit(
                     lambda: (prompt | structured).invoke(
                         {"current": current.model_dump_json(), "text": text}
                     )
                 )
             )
-        except Exception:
+            print(f"[PERF] Total extract() call: {time.time() - start:.3f}s")
+            return result
+        except Exception as e:
+            print(f"[PERF] Extract failed after {time.time() - start:.3f}s, falling back to rules: {e}")
+            print(f"[DEBUG] Exception type: {type(e).__name__}")
+            print(f"[DEBUG] Exception details: {str(e)}")
+            import traceback
+            print(f"[DEBUG] Traceback:\n{traceback.format_exc()}")
             return self._extract_with_rules(text, current)
 
     def _extract_with_rules(self, text: str, current: UserRequirements) -> RequirementUpdate:
@@ -297,33 +321,6 @@ class RequirementExtractor:
             update.noise_set = True
         if "wifi" in lower:
             update.need_wifi = True
-        if any(
-            k in text
-            for k in [
-                "需要显示器",
-                "含显示器",
-                "带显示器",
-                "算进预算",
-                "算在预算",
-                "包含显示器",
-            ]
-        ):
-            update.need_monitor = True
-            update.monitor_set = True
-        if any(k in text for k in ["不要显示器", "不需要显示器", "已有显示器"]):
-            update.need_monitor = False
-            update.monitor_set = True
-        if any(k in lower for k in ["144hz", "165hz", "240hz", "60hz"]):
-            hz = re.findall(r"(\d{2,3})\s*hz", lower)
-            if hz:
-                update.monitor_refresh_hz = int(hz[0])
-        if any(k in lower for k in ["1080p", "2k", "1440p", "4k"]):
-            if "4k" in lower:
-                update.monitor_resolution = "4k"
-            elif "2k" in lower or "1440p" in lower:
-                update.monitor_resolution = "1440p"
-            else:
-                update.monitor_resolution = "1080p"
         if any(k in lower for k in ["1t", "2t", "512g", "1tb", "2tb"]):
             if "2t" in lower or "2tb" in lower:
                 update.storage_target_gb = 2000
@@ -357,8 +354,6 @@ class RequirementExtractor:
             missing.append("use_case")
         if not (update.resolution_set or current.resolution_set):
             missing.append("resolution")
-        if not (update.monitor_set or current.monitor_set):
-            missing.append("monitor")
         if not (update.storage_set or current.storage_set):
             missing.append("storage")
         if not (update.noise_set or current.noise_set):
@@ -545,15 +540,24 @@ class RigForgeGraph:
         current = state.get("requirements") or UserRequirements()
         user_input = state["user_input"]
         last_assistant_reply = state.get("last_assistant_reply", "")
+        
+        llm_start = time.time()
         llm = self._runtime_llm(state.get("model_provider", "rules"), 0)
+        print(f"[PERF] LLM setup took {time.time() - llm_start:.3f}s")
+        
+        extract_start = time.time()
         try:
             update = self.extractor.extract(user_input, current, llm=llm)
         except TypeError:
             update = self.extractor.extract(user_input, current)
-        print(f"[DEBUG] collect_requirements LLM took {time.time() - start_time:.2f}s")
+        print(f"[PERF] Extract took {time.time() - extract_start:.3f}s")
+        
+        guards_start = time.time()
         update = self._apply_keyword_guards(update, user_input)
         update = self._apply_contextual_short_answer(update, user_input, last_assistant_reply)
         update = self._normalize_update_flags(update)
+        print(f"[PERF] Guards and normalization took {time.time() - guards_start:.3f}s")
+        
         lower = user_input.lower()
         if update.budget_max is None and any(
             k in state["user_input"] for k in ["便宜点", "省点", "省钱", "再便宜", "降一点"]
@@ -565,7 +569,11 @@ class RigForgeGraph:
                 update.priority = "budget"
         if update.priority is None and any(k in lower for k in ["性能优先", "更强", "拉满"]):
             update.priority = "performance"
+        
+        merge_start = time.time()
         merged = merge_requirements(current, update)
+        print(f"[PERF] Merge requirements took {time.time() - merge_start:.3f}s")
+        
         stop_followup = self._should_stop_followup(user_input)
         high_cooperation = self._is_high_cooperation(update)
 
@@ -576,8 +584,6 @@ class RigForgeGraph:
             missing.append("use_case")
         if not merged.resolution_set:
             missing.append("resolution")
-        if not merged.monitor_set:
-            missing.append("monitor")
         if not merged.storage_set:
             missing.append("storage")
         if not merged.noise_set:
@@ -616,6 +622,7 @@ class RigForgeGraph:
         return state["route"]
 
     def generate_follow_up(self, state: GraphState):
+        start = time.time()
         missing = state["follow_up_questions"]
         req = state["requirements"]
         high_cooperation = state.get("high_cooperation", False)
@@ -625,7 +632,6 @@ class RigForgeGraph:
             "use_case": "这台电脑主要做什么呢？游戏、办公、剪辑，还是 AI 开发？",
             "resolution": "你目标分辨率和刷新率是啥？比如 1080p 144Hz、2K 165Hz、4K 60Hz。",
             "cpu_preference": "CPU 你更偏向 Intel 还是 AMD？没有偏好我就按性价比来。",
-            "monitor": "你这次要不要把显示器也算进预算里？",
             "storage": "你对存储有要求吗？比如至少 1TB，或者 2TB 更稳。",
             "noise": "你会在意静音吗？比如希望风扇噪音尽量小。",
         }
@@ -637,11 +643,9 @@ class RigForgeGraph:
             candidate_keys.append("cpu_preference")
         if "gaming" in req.use_case and not req.game_titles:
             optional_questions.append("你平时主要玩哪些游戏？我会按目标帧率给你分配显卡和 CPU 预算。")
-        if req.need_monitor and not req.monitor_resolution:
-            optional_questions.append("显示器你期望 1080p、2K 还是 4K？刷新率有目标吗，比如 144Hz/165Hz？")
 
         ask_limit = 2 if high_cooperation else 1
-        ordered_keys = ["budget", "use_case", "resolution", "cpu_preference", "monitor", "storage", "noise"]
+        ordered_keys = ["budget", "use_case", "resolution", "cpu_preference", "storage", "noise"]
         if avoid_repeat_field in ordered_keys:
             ordered_keys = [k for k in ordered_keys if k != avoid_repeat_field] + [avoid_repeat_field]
         questions: List[str] = []
@@ -658,18 +662,29 @@ class RigForgeGraph:
                     questions.append(item)
         if not questions and optional_questions:
             questions = optional_questions[:ask_limit]
+        print(f"[PERF] generate_follow_up took {time.time() - start:.3f}s")
         return {"follow_up_questions": questions}
 
     def recommend_build(self, state: GraphState):
-        start_time = time.time()
+        start = time.time()
         req = state["requirements"]
+        context_start = time.time()
         _context = self.tool_map["recommendation_context"].invoke(req.model_dump())
+        print(f"[PERF] recommendation_context took {time.time() - context_start:.3f}s")
+        
+        pick_start = time.time()
         build = pick_build_from_candidates(req, self.tool_map["search_parts"])
-        print(f"[DEBUG] pick_build_from_candidates took {time.time() - start_time:.2f}s")
+        print(f"[PERF] pick_build_from_candidates took {time.time() - pick_start:.3f}s")
+        
+        fit_start = time.time()
         build = ensure_budget_fit(req, build)
+        print(f"[PERF] ensure_budget_fit took {time.time() - fit_start:.3f}s")
+        
+        print(f"[PERF] recommend_build total took {time.time() - start:.3f}s")
         return {"build": build}
 
     def validate_build(self, state: GraphState):
+        start = time.time()
         build = state["build"]
         skus = []
         for key in ["cpu", "motherboard", "memory", "gpu", "psu", "case", "cooler"]:
@@ -678,11 +693,13 @@ class RigForgeGraph:
                 skus.append(part.sku)
 
         if len(skus) < 7:
+            print(f"[PERF] validate_build took {time.time() - start:.3f}s (incomplete build)")
             return {
                 "compatibility_issues": ["build generation incomplete, please provide a wider budget"],
                 "estimated_power": 0,
             }
 
+        compat_start = time.time()
         issues = self.tool_map["check_compatibility"].invoke(
             {
                 "cpu_sku": build.cpu.sku,
@@ -694,21 +711,30 @@ class RigForgeGraph:
                 "cooler_sku": build.cooler.sku,
             }
         )
+        print(f"[PERF] check_compatibility took {time.time() - compat_start:.3f}s")
+        
+        power_start = time.time()
         estimated_power = self.tool_map["estimate_power"].invoke({"parts": skus})
+        print(f"[PERF] estimate_power took {time.time() - power_start:.3f}s")
+        
         if build.total_price() > state["requirements"].budget_max:
             issues.append(
                 f"Total price {build.total_price()} exceeds budget max {state['requirements'].budget_max}"
             )
+        print(f"[PERF] validate_build total took {time.time() - start:.3f}s")
         return {
             "compatibility_issues": issues,
             "estimated_power": estimated_power,
         }
 
     def compose_reply(self, state: GraphState):
-        start_time = time.time()
+        start = time.time()
+        llm_setup_start = time.time()
         llm = self._runtime_llm(state.get("model_provider", "rules"), 0.2)
+        print(f"[PERF] compose_reply LLM setup took {time.time() - llm_setup_start:.3f}s")
+        
         template_history = deepcopy(state.get("template_history", {}))
-        print(f"[DEBUG] compose_reply LLM started")
+        print(f"[PERF] compose_reply started")
         level = state.get("enthusiasm_level", "standard")
         effective_level = self._effective_enthusiasm_level(level, state.get("turn_number", 1))
         follow_style, recommend_style = self._enthusiasm_instructions(effective_level)
@@ -716,6 +742,7 @@ class RigForgeGraph:
             questions = state["follow_up_questions"]
             if llm:
                 try:
+                    prompt_start = time.time()
                     follow_prompt = ChatPromptTemplate.from_messages(
                         [
                             (
@@ -730,6 +757,9 @@ class RigForgeGraph:
                             ("human", "用户本轮输入: {user_input}\n问题列表: {questions}"),
                         ]
                     )
+                    print(f"[PERF] follow_prompt built in {time.time() - prompt_start:.3f}s")
+                    
+                    invoke_start = time.time()
                     reply = invoke_with_rate_limit(
                         lambda: invoke_with_turn_timeout(
                             lambda: (follow_prompt | llm).invoke(
@@ -741,9 +771,13 @@ class RigForgeGraph:
                             ).content
                         )
                     )
+                    print(f"[PERF] follow_up LLM invoke took {time.time() - invoke_start:.3f}s")
+                    
                     response_mode = "llm"
                     fallback_reason = None
                 except Exception as err:
+                    print(f"[PERF] follow_up LLM failed, falling back: {err}")
+                    fallback_start = time.time()
                     reply, template_history = self._fallback_followup_reply(
                         questions,
                         effective_level,
@@ -751,9 +785,11 @@ class RigForgeGraph:
                         user_input=state.get("user_input", ""),
                         template_history=template_history,
                     )
+                    print(f"[PERF] follow_up fallback took {time.time() - fallback_start:.3f}s")
                     response_mode = "fallback"
                     fallback_reason = self._classify_fallback_reason(err)
             else:
+                fallback_start = time.time()
                 reply, template_history = self._fallback_followup_reply(
                     questions,
                     effective_level,
@@ -761,8 +797,10 @@ class RigForgeGraph:
                     user_input=state.get("user_input", ""),
                     template_history=template_history,
                 )
+                print(f"[PERF] follow_up fallback (no LLM) took {time.time() - fallback_start:.3f}s")
                 response_mode = "fallback"
                 fallback_reason = "no_model_config"
+            print(f"[PERF] compose_reply total took {time.time() - start:.3f}s")
             return {
                 "response_text": reply,
                 "response_mode": response_mode,
@@ -778,6 +816,7 @@ class RigForgeGraph:
 
         if llm:
             try:
+                prompt_start = time.time()
                 prompt = ChatPromptTemplate.from_messages(
                     [
                         (
@@ -794,6 +833,9 @@ class RigForgeGraph:
                         ),
                     ]
                 )
+                print(f"[PERF] recommend_prompt built in {time.time() - prompt_start:.3f}s")
+                
+                invoke_start = time.time()
                 reply = invoke_with_rate_limit(
                     lambda: invoke_with_turn_timeout(
                         lambda: (prompt | llm).invoke(
@@ -808,9 +850,13 @@ class RigForgeGraph:
                         ).content
                     )
                 )
+                print(f"[PERF] recommend LLM invoke took {time.time() - invoke_start:.3f}s")
+                
                 response_mode = "llm"
                 fallback_reason = None
             except Exception as err:
+                print(f"[PERF] recommend LLM failed, falling back: {err}")
+                fallback_start = time.time()
                 reply, template_history = self._fallback_reply(
                     build,
                     issues,
@@ -820,9 +866,11 @@ class RigForgeGraph:
                     user_input=state.get("user_input", ""),
                     template_history=template_history,
                 )
+                print(f"[PERF] recommend fallback took {time.time() - fallback_start:.3f}s")
                 response_mode = "fallback"
                 fallback_reason = self._classify_fallback_reason(err)
         else:
+            fallback_start = time.time()
             reply, template_history = self._fallback_reply(
                 build,
                 issues,
@@ -832,8 +880,10 @@ class RigForgeGraph:
                 user_input=state.get("user_input", ""),
                 template_history=template_history,
             )
+            print(f"[PERF] recommend fallback (no LLM) took {time.time() - fallback_start:.3f}s")
             response_mode = "fallback"
             fallback_reason = "no_model_config"
+        print(f"[PERF] compose_reply total took {time.time() - start:.3f}s")
 
         return {
             "response_text": reply,
@@ -1029,7 +1079,6 @@ class RigForgeGraph:
             update.budget_set,
             update.use_case_set,
             update.resolution_set,
-            update.monitor_set,
             update.storage_set,
             update.noise_set,
             bool(update.cpu_preference),
@@ -1064,8 +1113,6 @@ class RigForgeGraph:
             update.use_case_set = True
         if update.resolution_set is None and update.resolution is not None:
             update.resolution_set = True
-        if update.monitor_set is None and update.need_monitor is not None:
-            update.monitor_set = True
         if update.storage_set is None and update.storage_target_gb is not None:
             update.storage_set = True
         if update.noise_set is None and update.need_quiet is not None:
@@ -1079,20 +1126,6 @@ class RigForgeGraph:
             update.cpu_preference = "Intel"
         elif "amd" in lower:
             update.cpu_preference = "AMD"
-        if any(
-            k in text
-            for k in [
-                "需要显示器",
-                "含显示器",
-                "带显示器",
-                "算进预算",
-                "算在预算",
-                "包含显示器",
-            ]
-        ):
-            update.need_monitor = True
-        if any(k in text for k in ["不要显示器", "不需要显示器", "已有显示器"]):
-            update.need_monitor = False
         if "静音" in text:
             update.need_quiet = True
         if any(k in text for k in ["不在乎噪音", "噪音无所谓", "噪音不敏感"]):
@@ -1140,12 +1173,8 @@ class RigForgeGraph:
             yes_no_matched = True
 
         last = (last_assistant_reply or "").lower()
-        asks_monitor = ("显示器" in last) and ("预算" in last or "需要" in last or "要不要" in last)
         asks_noise = ("静音" in last) or ("噪音" in last)
         if yes_no_matched:
-            if asks_monitor:
-                update.need_monitor = text in yes_words
-                update.monitor_set = True
             if asks_noise:
                 update.need_quiet = text in yes_words
                 update.noise_set = True
@@ -1207,7 +1236,6 @@ class RigForgeGraph:
                 update.budget_set is True,
                 update.use_case_set is True,
                 update.resolution_set is True,
-                update.monitor_set is True,
                 update.storage_set is True,
                 update.noise_set is True,
                 update.priority is not None,
