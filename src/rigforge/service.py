@@ -21,6 +21,7 @@ from .schemas import ChatResponse, UserRequirements
 class SessionState:
     requirements: UserRequirements = field(default_factory=UserRequirements)
     history: List[Dict[str, str]] = field(default_factory=list)
+    interaction_mode: Literal["chat", "component"] = "chat"
     enthusiasm_level: Literal["standard", "high"] = "standard"
     model_provider: Literal["zhipu", "openrouter", "rules"] | None = None
     model_status_detail: str = ""
@@ -82,6 +83,7 @@ class ChatService:
         self,
         session_id: str,
         message: str,
+        interaction_mode: Literal["chat", "component"] | None = None,
         enthusiasm_level: Literal["standard", "high"] | None = None,
     ) -> ChatResponse:
         session_lock = self._get_session_lock(session_id)
@@ -94,6 +96,8 @@ class ChatService:
             if session is None:
                 session = SessionState()
             self.sessions[session_id] = session
+            if interaction_mode in ("chat", "component"):
+                session.interaction_mode = interaction_mode
             if enthusiasm_level in ("standard", "high"):
                 session.enthusiasm_level = enthusiasm_level
             if session.model_provider is None:

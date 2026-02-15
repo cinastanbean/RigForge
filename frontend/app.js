@@ -1,6 +1,7 @@
 const chatBox = document.getElementById("chatBox");
 const chatForm = document.getElementById("chatForm");
 const messageInput = document.getElementById("messageInput");
+const interactionMode = document.getElementById("interactionMode");
 const enthusiasmLevel = document.getElementById("enthusiasmLevel");
 const buildDataMode = document.getElementById("buildDataMode");
 const requirementsBox = document.getElementById("requirements");
@@ -148,6 +149,7 @@ async function sendMessage(text) {
       body: JSON.stringify({
         session_id: sessionId,
         message: text,
+        interaction_mode: interactionMode?.value || "chat",
         enthusiasm_level: enthusiasmLevel?.value || "standard",
         build_data_mode: buildDataMode?.value || "newegg",
       }),

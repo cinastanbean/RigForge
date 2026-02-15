@@ -12,6 +12,30 @@
       <aside class="requirements-panel">
         <h2>需求画像</h2>
         <div id="requirements" class="card"></div>
+        <div class="controls">
+          <div class="control-group">
+            <label class="control-label">交互方式</label>
+            <select id="interactionMode" aria-label="交互模式">
+              <option value="chat" selected>对话方式</option>
+              <option value="component">组件选择</option>
+            </select>
+          </div>
+          <div class="control-group">
+            <label class="control-label">沟通模式</label>
+            <select id="enthusiasmLevel" aria-label="热情度档位">
+              <option value="standard" selected>标准互动</option>
+              <option value="high">高互动</option>
+            </select>
+          </div>
+          <div class="control-group">
+            <label class="control-label">商品数据来源</label>
+            <select id="buildDataMode" aria-label="推荐数据源模式">
+              <option value="newegg" selected>仅 Newegg</option>
+              <option value="jd">仅京东</option>
+              <option value="jd_newegg">京东 + Newegg</option>
+            </select>
+          </div>
+        </div>
       </aside>
 
       <section class="chat-panel">
@@ -21,15 +45,6 @@
         </header>
         <div id="chatBox" class="chat-box"></div>
         <form id="chatForm" class="chat-form">
-          <select id="enthusiasmLevel" aria-label="热情度档位">
-            <option value="standard" selected>标准互动</option>
-            <option value="high">高互动</option>
-          </select>
-          <select id="buildDataMode" aria-label="推荐数据源模式">
-            <option value="newegg" selected>仅 Newegg</option>
-            <option value="jd">仅京东</option>
-            <option value="jd_newegg">京东 + Newegg</option>
-          </select>
           <input id="messageInput" type="text" placeholder="例如：预算1万，2K游戏，尽量静音，优先NVIDIA" required />
           <button type="submit">发送</button>
         </form>

@@ -211,6 +211,7 @@ class ChatResponse(BaseModel):
 class ChatRequest(BaseModel):
     session_id: str
     message: str
+    interaction_mode: Optional[Literal["chat", "component"]] = None
     enthusiasm_level: Optional[Literal["standard", "high"]] = None
     build_data_mode: Optional[Literal["jd_newegg", "jd", "newegg"]] = None
 

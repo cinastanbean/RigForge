@@ -161,7 +161,7 @@ def chat(payload: ChatRequest):
     mode = _normalize_mode(payload.build_data_mode)
     routed_session_id = f"{mode}:{payload.session_id}"
     active_service = service if mode == "jd_newegg" else services[mode]
-    result = active_service.chat(routed_session_id, payload.message, payload.enthusiasm_level)
+    result = active_service.chat(routed_session_id, payload.message, payload.interaction_mode, payload.enthusiasm_level)
     _live_preview_build(mode, result)
     return result.model_dump()
 
