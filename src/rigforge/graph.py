@@ -415,7 +415,7 @@ class RequirementExtractor:
                     "你的任务：\n"
                     "1. 从用户输入中提取装机需求信息\n"
                     "2. 判断是否需要继续提问收集更多信息\n"
-                    "3. 如果需要继续，生成自然、友好的回复并提出下一个最关键的问题\n"
+                    "3. 如果需要继续，生成自然、友好的回复并提出下一个最关键的问题（必须提出问题！）\n"
                     "4. 如果信息足够或用户拒绝继续，标记 should_continue=false，表示需求收集完成\n\n"
                     "需要收集的关键信息：\n"
                     "- 预算范围 (budget_min, budget_max): 整数\n"
@@ -438,7 +438,7 @@ class RequirementExtractor:
                     "- 如果用户说\"预算9000\"，设置 budget_min=9000, budget_max=9000, budget_set=true\n"
                     "- 如果用户说\"预算8000-10000\"，设置 budget_min=8000, budget_max=10000, budget_set=true\n"
                     "- 判断是否继续提问：\n"
-                    "  * 如果用户说\"不用了\"、\"够了\"、\"就这样\"、\"不用再问\"、\"可以了\"、\"没问题\"、\"好的\"、\"行\"、\"OK\"、\"ok\"等表示结束的词，should_continue=false\n"
+                    "  * 如果用户说\"不用了\"、\"够了\"、\"就这样\"、\"不用再问\"、\"可以了\"、\"没问题\"、\"行\"、\"OK\"、\"ok\"等表示结束的词，should_continue=false\n"
                     "  * 如果用户说\"开始推荐\"、\"推荐吧\"、\"给我推荐\"、\"随便推荐\"、\"随便给我推荐\"、\"随便给我推荐个吧\"等，should_continue=false\n"
                     "  * 如果用户说\"随便\"、\"都可以\"、\"你看着办\"、\"你决定\"等表示让系统决定，should_continue=false\n"
                     "  * 如果已收集信息中包含预算、用途、分辨率三个核心信息，可以考虑停止提问（should_continue=false）\n"
@@ -450,9 +450,10 @@ class RequirementExtractor:
                     "- 回复应该表示需求收集完成，系统将自动生成推荐配置\n"
                     "- 例如：\"好的，我已经了解了您的需求。系统将根据您的需求自动生成推荐配置。\" 或 \"明白了，需求收集完成，现在为您生成配置方案。\"\n"
                     "- 不要提及具体的硬件配置，只表示需求收集完成\n\n"
-                    "当 should_continue=true 时：\n"
-                    "- 回复应该包含一个最关键的问题\n"
+                    "当 should_continue=true 时（重要！必须提出问题）：\n"
+                    "- 回复必须包含一个最关键的问题，不能只说\"收到\"或\"好的\"等\n"
                     "- 例如：\"好的，预算9000元很明确。请问这台电脑主要用于什么用途呢？比如游戏、办公、视频剪辑还是AI训练？\"\n"
+                    "- 例如：\"明白了，办公用途已记录。请问您对显示器分辨率有什么要求吗？比如1080p、2K还是4K？\"\n"
                     "- 注意：如果已收集信息中已经包含某个字段，就不要再问这个问题\n\n"
                     "输出格式：\n"
                     "{{\n"
@@ -463,7 +464,7 @@ class RequirementExtractor:
                     "    \"prefer_brands_set\": true,\n"
                     "    ...\n"
                     "  }},\n"
-                    "  \"reply\": \"你的回复内容\",\n"
+                    "  \"reply\": \"你的回复内容（当 should_continue=true 时，必须包含问题！）\",\n"
                     "  \"should_continue\": true/false\n"
                     "}}",
                 ),
@@ -485,10 +486,12 @@ class RequirementExtractor:
                 "text": text,
                 "follow_style": follow_style,
             }
+            
             print(f"\n{'='*60}")
             print(f"[LLM INPUT] 对话式需求收集")
-            print(f"  已收集: {collected_summary}")
+            print(f"  已收集信息: {collected_summary}")
             print(f"  用户输入: {text}")
+            print(f"  语气风格: {follow_style}")
             print(f"{'='*60}\n")
             
             print(f"[DEBUG] About to invoke LLM...")
@@ -499,12 +502,13 @@ class RequirementExtractor:
                 ),
                 timeout_seconds=60.0
             )
-            print(f"[DEBUG] LLM invoke completed successfully")
+            invoke_time = time.time() - invoke_start
+            print(f"[DEBUG] LLM invoke completed successfully in {invoke_time:.3f}s")
             
             print(f"\n{'='*60}")
-            print(f"[LLM OUTPUT] 对话式需求收集结果:")
-            print(f"  需求更新: {result.requirement_update.model_dump_json()[:300]}...")
-            print(f"  回复: {result.reply[:100]}...")
+            print(f"[LLM OUTPUT] 对话式需求收集结果")
+            print(f"  需求更新: {result.requirement_update.model_dump_json()}")
+            print(f"  回复内容: {result.reply}")
             print(f"  继续提问: {result.should_continue}")
             print(f"{'='*60}\n")
             
@@ -970,7 +974,23 @@ class RigForgeGraph:
         rule_based_route = self._rule_based_route_decision(merged, user_input, turn_number, max_turns)
         llm_based_route = "recommend" if not result.should_continue else "ask_more"
         
-        route = rule_based_route if rule_based_route == "recommend" else llm_based_route
+        # LLM 判断优先级更高，只有当 LLM 判断为 "recommend" 时才使用规则引擎的判断
+        # 这样可以确保 LLM 的对话意图得到尊重
+        route = llm_based_route
+        if llm_based_route == "recommend" and rule_based_route == "recommend":
+            route = "recommend"
+        elif llm_based_route == "recommend" and rule_based_route == "ask_more":
+            # LLM 认为应该结束，但规则引擎认为应该继续提问
+            # 优先使用 LLM 的判断
+            route = "recommend"
+        elif llm_based_route == "ask_more" and rule_based_route == "recommend":
+            # LLM 认为应该继续提问，但规则引擎认为应该结束
+            # 优先使用 LLM 的判断，让对话继续
+            route = "ask_more"
+        else:
+            route = "ask_more"
+        
+        print(f"[DEBUG] Route decision: LLM={llm_based_route}, Rule={rule_based_route}, Final={route}")
         tracker.end()
         
         return {
@@ -987,6 +1007,13 @@ class RigForgeGraph:
     def _rule_based_route_decision(self, merged: UserRequirements, user_input: str, turn_number: int, max_turns: int) -> str:
         """规则引擎判断是否应该结束对话"""
         
+        print(f"[DEBUG] Rule-based route decision:")
+        print(f"[DEBUG]   Turn number: {turn_number}/{max_turns}")
+        print(f"[DEBUG]   User input: {user_input}")
+        print(f"[DEBUG]   Budget set: {merged.budget_set}")
+        print(f"[DEBUG]   Use case set: {merged.use_case_set}")
+        print(f"[DEBUG]   Resolution set: {merged.resolution_set}")
+        
         # 1. 检查对话轮数是否超过限制
         if turn_number >= max_turns:
             print(f"[DEBUG] Rule: Turn number {turn_number} >= max_turns {max_turns}, recommend")
@@ -995,7 +1022,7 @@ class RigForgeGraph:
         # 2. 检查用户输入是否包含结束对话的关键词
         stop_keywords = [
             "不用了", "够了", "就这样", "不用再问", "可以了", "没问题", 
-            "好的", "行", "OK", "ok", "开始推荐", "推荐吧", "给我推荐", 
+            "行", "OK", "ok", "开始推荐", "推荐吧", "给我推荐", 
             "随便推荐", "随便给我推荐", "随便给我推荐个吧", "随便", 
             "都可以", "你看着办", "你决定"
         ]
@@ -1011,6 +1038,8 @@ class RigForgeGraph:
             key_fields_collected += 1
         if merged.resolution_set:
             key_fields_collected += 1
+        
+        print(f"[DEBUG]   Key fields collected: {key_fields_collected}/3")
         
         # 如果收集到3个关键信息，可以考虑结束对话
         if key_fields_collected >= 3:
@@ -1273,6 +1302,16 @@ class RigForgeGraph:
                     "recommend_style": recommend_style,
                 }
                 
+                print(f"\n{'='*60}")
+                print(f"[LLM INPUT] 推荐配置回复生成")
+                print(f"  需求: {req.model_dump_json()[:300]}...")
+                print(f"  配置: {build.model_dump_json()[:300]}...")
+                print(f"  兼容性问题: {issues}")
+                print(f"  总价: {build.total_price()}")
+                print(f"  功耗: {state.get('estimated_power', 0)}")
+                print(f"  推荐风格: {recommend_style}")
+                print(f"{'='*60}\n")
+                
                 tracker.start("LLM invoke")
                 recommendation_reply = invoke_with_rate_limit(
                     lambda: invoke_with_turn_timeout(
@@ -1281,6 +1320,12 @@ class RigForgeGraph:
                     )
                 )
                 tracker.end()
+                
+                print(f"\n{'='*60}")
+                print(f"[LLM OUTPUT] 推荐配置回复结果")
+                print(f"  回复内容: {recommendation_reply}")
+                print(f"  回复长度: {len(recommendation_reply)}")
+                print(f"{'='*60}\n")
                 
                 combined_reply = f"{existing_reply}\n\n{recommendation_reply}"
                 
@@ -1404,6 +1449,7 @@ class RigForgeGraph:
                     print(f"[LLM INPUT #2] 追问回复生成")
                     print(f"  用户输入: {model_input['user_input']}")
                     print(f"  问题列表: {model_input['questions']}")
+                    print(f"  语气风格: {follow_style}")
                     print(f"{'='*60}\n")
                     
                     invoke_start = time.time()
@@ -1415,11 +1461,14 @@ class RigForgeGraph:
                             timeout_seconds=60.0
                         )
                     )
+                    invoke_time = time.time() - invoke_start
                     
                     # 显示模型输出
                     print(f"\n{'='*60}")
-                    print(f"[LLM OUTPUT #2] 追问回复:")
-                    print(f"  {reply[:300]}...")
+                    print(f"[LLM OUTPUT #2] 追问回复结果")
+                    print(f"  回复内容: {reply}")
+                    print(f"  回复长度: {len(reply)}")
+                    print(f"  调用耗时: {invoke_time:.3f}s")
                     print(f"{'='*60}\n")
                     
                     print(f"[PERF] follow_up LLM invoke took {time.time() - invoke_start:.3f}s")
@@ -1486,23 +1535,42 @@ class RigForgeGraph:
                 )
                 print(f"[PERF] recommend_prompt built in {time.time() - prompt_start:.3f}s")
                 
+                model_input = {
+                    "req": req.model_dump_json(),
+                    "build": build.model_dump_json(),
+                    "issues": issues,
+                    "price": build.total_price(),
+                    "power": state.get("estimated_power", 0),
+                    "recommend_style": recommend_style,
+                }
+                
+                print(f"\n{'='*60}")
+                print(f"[LLM INPUT] 推荐配置回复生成（非对话模式）")
+                print(f"  需求: {req.model_dump_json()[:300]}...")
+                print(f"  配置: {build.model_dump_json()[:300]}...")
+                print(f"  兼容性问题: {issues}")
+                print(f"  总价: {build.total_price()}")
+                print(f"  功耗: {state.get('estimated_power', 0)}")
+                print(f"  推荐风格: {recommend_style}")
+                print(f"{'='*60}\n")
+                
                 invoke_start = time.time()
                 reply = invoke_with_rate_limit(
                     lambda: invoke_with_turn_timeout(
                         lambda: (prompt | llm).invoke(
-                            {
-                                "req": req.model_dump_json(),
-                                "build": build.model_dump_json(),
-                                "issues": issues,
-                                "price": build.total_price(),
-                                "power": state.get("estimated_power", 0),
-                                "recommend_style": recommend_style,
-                            }
+                            model_input
                         ).content,
                         timeout_seconds=60.0
                     )
                 )
-                print(f"[PERF] recommend LLM invoke took {time.time() - invoke_start:.3f}s")
+                invoke_time = time.time() - invoke_start
+                print(f"[PERF] recommend LLM invoke took {invoke_time:.3f}s")
+                
+                print(f"\n{'='*60}")
+                print(f"[LLM OUTPUT] 推荐配置回复结果（非对话模式）")
+                print(f"  回复内容: {reply}")
+                print(f"  回复长度: {len(reply)}")
+                print(f"{'='*60}\n")
                 
                 response_mode = "llm"
                 fallback_reason = None
