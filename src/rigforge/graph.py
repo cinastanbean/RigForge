@@ -1153,6 +1153,8 @@ class RigForgeGraph:
         req = state["requirements"]
         high_cooperation = state.get("high_cooperation", False)
         avoid_repeat_field = state.get("avoid_repeat_field")
+        existing_response = state.get("response_text", "")
+        
         mapping = {
             "budget": "你的预算范围大概是多少呀？例如 7000-9000 或 10000-12000。",
             "use_case": "这台电脑主要做什么呢？游戏、办公、剪辑，还是 AI 开发？",
@@ -1188,8 +1190,28 @@ class RigForgeGraph:
                     questions.append(item)
         if not questions and optional_questions:
             questions = optional_questions[:ask_limit]
+        
+        # 如果没有 missing 字段，根据当前需求推断缺失的关键信息
+        if not questions:
+            if not (req.budget_min or req.budget_max):
+                questions.append(mapping["budget"])
+            elif not req.use_case:
+                questions.append(mapping["use_case"])
+            elif not req.resolution:
+                questions.append(mapping["resolution"])
+            else:
+                # 已经有足够信息，应该直接推荐
+                questions.append("看来信息已经足够了，我这就为你生成推荐配置！")
+        
+        # 更新 response_text：如果已有回复是无意义的 fallback，替换为真实问题
+        is_placeholder_reply = existing_response in ["收到，我们继续。", "好的", "收到"]
+        if is_placeholder_reply and questions:
+            response_text = questions[0] if len(questions) == 1 else "、".join(questions)
+        else:
+            response_text = existing_response
+        
         print(f"[PERF] generate_follow_up took {time.time() - start:.3f}s")
-        return {"follow_up_questions": questions}
+        return {"follow_up_questions": questions, "response_text": response_text}
 
     def recommend_build(self, state: GraphState):
         tracker = PerformanceTracker("recommend_build")
