@@ -1,4 +1,9 @@
-"""追问生成节点"""
+"""
+追问生成节点 - Follow-up Generation Node
+
+根据缺失的需求信息生成追问问题。
+Generate follow-up questions based on missing requirement information.
+"""
 
 from __future__ import annotations
 
@@ -8,7 +13,7 @@ if TYPE_CHECKING:
     from ..data.models import UserRequirements
 
 
-# 追问问题模板
+# 追问问题模板 - Follow-up Question Templates
 FOLLOW_UP_QUESTIONS = {
     "budget": [
         "请问您的预算范围是多少呢？比如 5000-8000 元？",
@@ -38,19 +43,27 @@ def generate_follow_up(
     missing_fields: List[str],
     avoid_field: str | None = None,
 ) -> List[str]:
-    """生成追问问题列表
+    """
+    生成追问问题列表 - Generate Follow-up Question List
     
-    Args:
+    根据缺失的需求字段，生成追问问题列表。
+    Generate follow-up question list based on missing requirement fields.
+    
+    参数 Parameters:
         requirements: 当前已收集的需求
+                     Currently collected requirements
         missing_fields: 缺失的字段列表
+                        List of missing fields
         avoid_field: 需要避免的字段（上次已问过）
-        
-    Returns:
+                     Field to avoid (already asked in previous turn)
+    
+    返回 Returns:
         问题列表
+        List of questions
     """
     questions = []
     
-    # 按优先级排序缺失字段
+    # 按优先级排序缺失字段 - Sort missing fields by priority
     priority_order = ["budget", "use_case", "resolution", "storage", "noise"]
     ordered_missing = sorted(
         missing_fields,
@@ -58,20 +71,34 @@ def generate_follow_up(
     )
     
     for field in ordered_missing:
+        # 跳过需要避免的字段 - Skip field to avoid
         if field == avoid_field:
             continue
         
         if field in FOLLOW_UP_QUESTIONS:
             templates = FOLLOW_UP_QUESTIONS[field]
-            # 简单选择第一个模板
+            # 简单选择第一个模板 - Simply select the first template
             questions.append(templates[0])
-            break  # 每次只问一个问题
+            break  # 每次只问一个问题 - Only ask one question at a time
     
     return questions
 
 
 def generate_follow_up_node(state: dict) -> dict:
-    """追问生成节点入口函数"""
+    """
+    追问生成节点入口函数 - Follow-up Generation Node Entry Function
+    
+    此函数将被 graph.py 调用。
+    This function will be called by graph.py.
+    
+    参数 Parameters:
+        state: 当前状态字典
+               Current state dictionary
+    
+    返回 Returns:
+        更新后的状态字典，包含追问问题列表
+        Updated state dictionary containing follow-up question list
+    """
     requirements = state.get("requirements")
     missing_fields = state.get("follow_up_questions", [])
     avoid_field = state.get("avoid_repeat_field")

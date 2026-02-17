@@ -9,12 +9,24 @@ from .schemas import BuildPlan, Part, UserRequirements
 
 
 class PartsRepoProtocol(Protocol):
+    """
+    配件仓库协议 - Parts Repository Protocol
+    
+    定义配件仓库的接口规范，确保不同的配件仓库实现具有统一的方法签名。
+    Defines the interface specification for parts repository, ensuring different implementations have consistent method signatures.
+    """
     def all_parts(self) -> List[Part]: ...
     def by_category(self, category: str) -> List[Part]: ...
     def find_by_sku(self, sku: str) -> Part | None: ...
 
 
 class SearchPartsInput(BaseModel):
+    """
+    搜索配件输入模型 - Search Parts Input Model
+    
+    定义搜索配件时需要的输入参数。
+    Defines input parameters required for searching parts.
+    """
     category: str = Field(description="Part category such as cpu, gpu, motherboard")
     budget_max: int = Field(description="Max acceptable price for this category")
     prefer_brands: List[str] = Field(default_factory=list)
@@ -22,6 +34,12 @@ class SearchPartsInput(BaseModel):
 
 
 class CompatibilityInput(BaseModel):
+    """
+    兼容性检查输入模型 - Compatibility Check Input Model
+    
+    定义检查硬件兼容性时需要的输入参数，包含所有核心硬件的 SKU。
+    Defines input parameters required for checking hardware compatibility, including SKUs of all core hardware.
+    """
     cpu_sku: str
     motherboard_sku: str
     memory_sku: str
@@ -32,6 +50,12 @@ class CompatibilityInput(BaseModel):
 
 
 class RecommendationContextInput(BaseModel):
+    """
+    推荐上下文输入模型 - Recommendation Context Input Model
+    
+    定义生成推荐上下文时需要的输入参数，包括预算、用途和分辨率。
+    Defines input parameters required for generating recommendation context, including budget, use case, and resolution.
+    """
     budget_min: int
     budget_max: int
     use_case: List[str] = Field(default_factory=list)
@@ -39,6 +63,19 @@ class RecommendationContextInput(BaseModel):
 
 
 class Toolset:
+    """
+    工具集类 - Toolset Class
+    
+    管理所有推荐系统相关的工具函数，包括配件搜索、功耗估算、兼容性检查和推荐上下文生成。
+    Manages all recommendation system related tool functions, including parts search, power estimation, compatibility check, and recommendation context generation.
+    
+    工具列表 Tool List:
+    - search_parts: 按类别和预算搜索配件
+    - estimate_power: 估算系统功耗
+    - check_compatibility: 检查硬件兼容性
+    - recommendation_context: 生成推荐上下文（权重配置）
+    """
+    
     def __init__(
         self,
         repo: PartsRepoProtocol,
@@ -47,12 +84,32 @@ class Toolset:
         build_data_version: str = "v0",
         build_data_mode: str = "jd_newegg",
     ):
+        """
+        初始化工具集 - Initialize toolset
+        
+        参数 Parameters:
+            repo: 配件仓库实例，用于查询配件数据
+                  Parts repository instance for querying parts data
+            build_data_source: 配件数据源，默认为 "csv(jd+newegg)"
+                               Parts data source, default is "csv(jd+newegg)"
+            build_data_version: 配件数据版本，默认为 "v0"
+                               Parts data version, default is "v0"
+            build_data_mode: 配件数据模式，默认为 "jd_newegg"
+                            Parts data mode, default is "jd_newegg"
+        """
         self.repo = repo
         self.build_data_source = build_data_source
         self.build_data_version = build_data_version
         self.build_data_mode = build_data_mode
 
     def register(self):
+        """
+        注册所有工具函数 - Register all tool functions
+        
+        返回 Returns:
+            工具字典，包含所有已注册的工具函数
+            Dictionary of tools, containing all registered tool functions
+        """
         repo = self.repo
 
         @tool("search_parts", args_schema=SearchPartsInput)
@@ -62,7 +119,34 @@ class Toolset:
             prefer_brands: List[str] | None = None,
             exclude_brands: List[str] | None = None,
         ) -> List[dict]:
-            """Search parts by category and budget, sorted by performance score."""
+            """
+            搜索配件 - Search Parts
+            
+            按类别和预算搜索配件，支持品牌偏好和排除品牌，按性能评分排序。
+            Search parts by category and budget, supporting brand preferences and exclusions, sorted by performance score.
+            
+            处理流程 Processing Flow:
+            1. 从仓库获取指定类别的所有配件
+            2. 过滤出价格在预算范围内的配件
+            3. 排除黑名单中的品牌
+            4. 如果有品牌偏好，优先显示偏好品牌
+            5. 按性能评分和价格排序
+            6. 返回前 5 个最佳匹配
+            
+            参数 Parameters:
+                category: 配件类别，如 "cpu", "gpu", "motherboard" 等
+                          Part category, such as "cpu", "gpu", "motherboard", etc.
+                budget_max: 该类别的最大预算
+                           Max budget for this category
+                prefer_brands: 偏好品牌列表，优先选择这些品牌
+                              List of preferred brands, prioritize these brands
+                exclude_brands: 排除品牌列表，不选择这些品牌
+                               List of excluded brands, do not select these brands
+            
+            返回 Returns:
+                配件字典列表，每个字典包含配件的详细信息
+                List of part dictionaries, each containing detailed part information
+            """
             print(f"[DEBUG] search_parts called:")
             print(f"  category: {category}")
             print(f"  budget_max: {budget_max}")
@@ -85,10 +169,12 @@ class Toolset:
             prefer_brands_norm = {_norm(b) for b in prefer_brands if b and b.strip()}
             exclude_brands_norm = {_norm(b) for b in exclude_brands if b and b.strip()}
             
+            # 步骤 1: 从仓库获取指定类别的所有配件 - Step 1: Get all parts in category from repository
             print(f"[DEBUG] Getting parts by category: {category}")
             all_parts = repo.by_category(category)
             print(f"[DEBUG] Total parts in category: {len(all_parts)}")
             
+            # 步骤 2-3: 过滤价格和品牌 - Step 2-3: Filter by price and brand
             candidates = [
                 p
                 for p in all_parts
@@ -97,7 +183,9 @@ class Toolset:
             ]
             print(f"[DEBUG] Candidates after filtering: {len(candidates)}")
             
+            # 步骤 4-5: 排序 - Step 4-5: Sort
             if prefer_brands_norm:
+                # 优先显示偏好品牌 - Prioritize preferred brands
                 candidates.sort(
                     key=lambda p: (
                         not any(_brand_matches(p, preferred) for preferred in prefer_brands_norm),
@@ -106,15 +194,35 @@ class Toolset:
                     )
                 )
             else:
+                # 按性能评分和价格排序 - Sort by performance score and price
                 candidates.sort(key=lambda p: (-p.score, p.price))
             
+            # 步骤 6: 返回前 5 个 - Step 6: Return top 5
             result = [c.model_dump() for c in candidates[:5]]
             print(f"[DEBUG] Returning {len(result)} results")
             return result
 
         @tool("estimate_power")
         def estimate_power(parts: List[str]) -> int:
-            """Estimate system power draw by summing part watt usage and adding headroom."""
+            """
+            估算系统功耗 - Estimate System Power
+            
+            通过累加所有配件的功耗并添加余量来估算系统总功耗。
+            Estimate total system power draw by summing all parts' wattage and adding headroom.
+            
+            处理流程 Processing Flow:
+            1. 累加所有配件的功耗
+            2. 乘以 1.35 作为余量（考虑峰值功耗和效率损耗）
+            3. 返回估算的总功耗
+            
+            参数 Parameters:
+                parts: 配件 SKU 列表
+                       List of part SKUs
+            
+            返回 Returns:
+                估算的系统总功耗（瓦特）
+                Estimated total system power draw (watts)
+            """
             watts = 0
             for sku in parts:
                 part = repo.find_by_sku(sku)
@@ -132,7 +240,33 @@ class Toolset:
             case_sku: str,
             cooler_sku: str,
         ) -> List[str]:
-            """Validate core hardware compatibility constraints."""
+            """
+            检查硬件兼容性 - Check Hardware Compatibility
+            
+            验证核心硬件之间的兼容性约束，包括接口、尺寸、功耗等。
+            Validate core hardware compatibility constraints, including interfaces, dimensions, power, etc.
+            
+            检查项 Check Items:
+            1. CPU 和主板插槽匹配
+            2. 内存类型和主板匹配
+            3. 显卡长度和机箱匹配
+            4. 散热器高度和机箱匹配
+            5. 电源功率是否足够
+            6. 主板和机箱规格匹配
+            
+            参数 Parameters:
+                cpu_sku: CPU SKU
+                motherboard_sku: 主板 SKU
+                memory_sku: 内存 SKU
+                gpu_sku: 显卡 SKU
+                psu_sku: 电源 SKU
+                case_sku: 机箱 SKU
+                cooler_sku: 散热器 SKU
+            
+            返回 Returns:
+                兼容性问题列表，如果为空则表示兼容
+                List of compatibility issues, empty if compatible
+            """
             issues: List[str] = []
             cpu = repo.find_by_sku(cpu_sku)
             motherboard = repo.find_by_sku(motherboard_sku)
@@ -145,23 +279,29 @@ class Toolset:
             if not all([cpu, motherboard, memory, gpu, psu, case, cooler]):
                 return ["build parts are incomplete"]
 
+            # 检查 1: CPU 和主板插槽匹配 - Check 1: CPU and motherboard socket match
             if cpu.socket != motherboard.socket:
                 issues.append("CPU and motherboard socket mismatch")
 
+            # 检查 2: 内存类型和主板匹配 - Check 2: Memory type and motherboard match
             if motherboard.memory_type and memory.memory_type:
                 if motherboard.memory_type != memory.memory_type:
                     issues.append("Memory generation mismatch with motherboard")
 
+            # 检查 3: 显卡长度和机箱匹配 - Check 3: GPU length and case match
             if gpu.length_mm > case.length_mm:
                 issues.append("GPU is too long for selected case")
 
+            # 检查 4: 散热器高度和机箱匹配 - Check 4: Cooler height and case match
             if cooler.height_mm > case.height_mm and cooler.height_mm > 100:
                 issues.append("Air cooler height exceeds case limit")
 
+            # 检查 5: 电源功率是否足够 - Check 5: PSU wattage is sufficient
             needed = int((cpu.watt + gpu.watt + 120) * 1.35)
             if psu.watt < needed:
                 issues.append("PSU wattage may be insufficient")
 
+            # 检查 6: 主板和机箱规格匹配 - Check 6: Motherboard and case form factor match
             if motherboard.form_factor and case.form_factor:
                 if motherboard.form_factor == "ATX" and case.form_factor == "mATX":
                     issues.append("ATX motherboard cannot fit mATX case")
@@ -175,13 +315,39 @@ class Toolset:
             use_case: List[str],
             resolution: str,
         ) -> dict:
-            """Generate target weights for price, GPU, and CPU according to user goal."""
+            """
+            生成推荐上下文 - Generate Recommendation Context
+            
+            根据用户目标生成价格、GPU 和 CPU 的目标权重配置。
+            Generate target weights for price, GPU, and CPU according to user goal.
+            
+            处理流程 Processing Flow:
+            1. 根据用途调整 GPU 和 CPU 权重
+               - 游戏用途增加 GPU 权重
+               - 视频剪辑或 AI 用途增加 CPU 权重
+            2. 返回预算范围、分辨率和权重配置
+            
+            参数 Parameters:
+                budget_min: 最小预算
+                           Min budget
+                budget_max: 最大预算
+                           Max budget
+                use_case: 用途列表，如 ["gaming"], ["video_editing", "ai"]
+                         Use case list, such as ["gaming"], ["video_editing", "ai"]
+                resolution: 分辨率，如 "1080p", "1440p", "4k"
+                            Resolution, such as "1080p", "1440p", "4k"
+            
+            返回 Returns:
+                推荐上下文字典，包含预算范围、分辨率和权重配置
+                Recommendation context dictionary, including budget range, resolution, and weight configuration
+            """
             print(f"[DEBUG] recommendation_context called:")
             print(f"  budget_min: {budget_min}")
             print(f"  budget_max: {budget_max}")
             print(f"  use_case: {use_case}")
             print(f"  resolution: {resolution}")
             
+            # 根据用途调整权重 - Adjust weights based on use case
             gpu_weight = 0.35
             cpu_weight = 0.25
             if "gaming" in use_case:
@@ -210,9 +376,40 @@ def pick_build_from_candidates(
     req: UserRequirements,
     search_parts_tool,
 ) -> BuildPlan:
+    """
+    从候选配件中选择配置方案 - Pick Build Plan from Candidate Parts
+    
+    根据用户需求和候选配件，智能选择最佳的硬件配置方案。
+    Intelligently select the best hardware configuration plan based on user requirements and candidate parts.
+    
+    处理流程 Processing Flow:
+    1. 根据总预算分配各类配件的预算
+       - CPU: 20%
+       - 主板: 13%
+       - 内存: 8%
+       - 存储: 8%
+       - 显卡: 32%
+       - 电源: 8%
+       - 机箱: 6%
+       - 散热器: 5%
+    2. 依次选择各类配件，考虑品牌偏好、性能优先级和兼容性
+    3. 确保配件之间的兼容性（插槽、尺寸、功耗等）
+    4. 返回完整的配置方案
+    
+    参数 Parameters:
+        req: 用户需求对象，包含预算、用途、品牌偏好等
+             User requirements object, including budget, use case, brand preferences, etc.
+        search_parts_tool: 搜索配件的工具函数
+                          Tool function for searching parts
+    
+    返回 Returns:
+        完整的配置方案
+        Complete build plan
+    """
     print(f"[DEBUG] pick_build_from_candidates called")
     print(f"[DEBUG] Budget max: {req.budget_max}")
     
+    # 步骤 1: 分配预算 - Step 1: Allocate budget
     budgets = {
         "cpu": int(req.budget_max * 0.2),
         "motherboard": int(req.budget_max * 0.13),
@@ -229,6 +426,24 @@ def pick_build_from_candidates(
     build = BuildPlan()
 
     def choose(category: str, predicate=None, strict_predicate: bool = False) -> Part | None:
+        """
+        选择配件 - Choose Part
+        
+        根据类别、预算和约束条件选择最佳配件。
+        Select the best part based on category, budget, and constraints.
+        
+        参数 Parameters:
+            category: 配件类别
+                      Part category
+            predicate: 可选的谓词函数，用于进一步过滤配件
+                      Optional predicate function for further filtering parts
+            strict_predicate: 是否严格应用谓词，如果为 True 且没有匹配项则返回 None
+                             Whether to strictly apply predicate, if True and no match then return None
+        
+        返回 Returns:
+            选中的配件，如果没有找到则返回 None
+            Selected part, or None if not found
+        """
         print(f"[DEBUG] choose called for category: {category}")
         
         def _norm(value: str) -> str:
@@ -248,13 +463,17 @@ def pick_build_from_candidates(
         category_prefer_brands = list(req.prefer_brands)
         category_exclude_brands = list(req.brand_blacklist)
         cpu_preference = (req.cpu_preference or "").strip()
+        
+        # CPU 品牌偏好处理 - CPU brand preference handling
         if category == "cpu" and cpu_preference:
+            # 显式的 CPU 偏好应该比通用品牌历史更强
             # Explicit CPU preference should be stronger than generic brand history.
             category_prefer_brands = [cpu_preference]
             category_exclude_brands = [
                 b for b in category_exclude_brands if b.strip().lower() != cpu_preference.lower()
             ]
         
+        # 第一次搜索：使用类别预算 - First search: use category budget
         print(f"[DEBUG] Calling search_parts for {category}...")
         raw = search_parts_tool.invoke(
             {
@@ -266,6 +485,7 @@ def pick_build_from_candidates(
         )
         print(f"[DEBUG] First search for {category} returned {len(raw) if raw else 0} items")
         
+        # 判断是否需要扩展预算 - Check if budget expansion is needed
         should_expand_budget = (
             category == "cpu"
             and bool(cpu_preference)
@@ -273,6 +493,7 @@ def pick_build_from_candidates(
             and not _has_preferred_brand(raw, cpu_preference)
         )
         if not raw or should_expand_budget:
+            # 第二次搜索：扩展预算 - Second search: expand budget
             is_fallback = True
             print(f"[DEBUG] Expanding budget for {category}...")
             raw = search_parts_tool.invoke(
@@ -288,6 +509,8 @@ def pick_build_from_candidates(
             print(f"[DEBUG] No items found for {category}")
             return None
         items = [Part.model_validate(item) for item in raw]
+        
+        # CPU 品牌匹配 - CPU brand matching
         if category == "cpu" and cpu_preference:
             matched_cpu_brand = [
                 item for item in items if _brand_matches(item, cpu_preference)
@@ -295,8 +518,11 @@ def pick_build_from_candidates(
             if matched_cpu_brand:
                 items = matched_cpu_brand
             else:
+                # 不要静默违反显式的 CPU 品牌偏好
                 # Do not silently violate an explicit CPU brand preference.
                 return None
+        
+        # 根据优先级排序 - Sort by priority
         if req.priority == "budget" or is_fallback:
             items.sort(key=lambda p: p.price)
         elif req.priority == "performance":
@@ -304,6 +530,7 @@ def pick_build_from_candidates(
         
         print(f"[DEBUG] Items after sorting: {len(items)}")
         
+        # 应用谓词过滤 - Apply predicate filtering
         if predicate:
             print(f"[DEBUG] Applying predicate for {category}...")
             for item in items:
@@ -319,11 +546,18 @@ def pick_build_from_candidates(
         print(f"[DEBUG] Returning first item for {category}: {items[0].name if items else 'None'}")
         return items[0]
 
+    # 步骤 2: 依次选择各类配件 - Step 2: Choose parts in order
+    
+    # 选择 CPU - Choose CPU
     build.cpu = choose("cpu")
+    
+    # 选择主板（必须与 CPU 插槽匹配）- Choose motherboard (must match CPU socket)
     build.motherboard = choose(
         "motherboard",
         predicate=(lambda p: build.cpu is not None and p.socket == build.cpu.socket),
     )
+    
+    # 选择内存（必须与主板内存类型匹配，严格匹配）- Choose memory (must match motherboard memory type, strict match)
     build.memory = choose(
         "memory",
         predicate=(
@@ -332,9 +566,14 @@ def pick_build_from_candidates(
         ),
         strict_predicate=True,
     )
+    
+    # 选择存储 - Choose storage
     build.storage = choose("storage")
+    
+    # 选择显卡 - Choose GPU
     build.gpu = choose("gpu")
 
+    # 计算目标电源功率 - Calculate target PSU wattage
     estimated_draw = 0
     if build.cpu:
         estimated_draw += build.cpu.watt
@@ -342,7 +581,10 @@ def pick_build_from_candidates(
         estimated_draw += build.gpu.watt
     target_psu = int((estimated_draw + 120) * 1.35)
 
+    # 选择电源（功率必须足够）- Choose PSU (wattage must be sufficient)
     build.psu = choose("psu", predicate=(lambda p: p.watt >= target_psu))
+    
+    # 选择机箱（必须与主板规格匹配，且能容纳显卡）- Choose case (must match motherboard form factor and fit GPU)
     build.case = choose(
         "case",
         predicate=(
@@ -353,6 +595,8 @@ def pick_build_from_candidates(
             and (build.gpu is None or p.length_mm >= build.gpu.length_mm)
         ),
     )
+    
+    # 选择散热器（高度必须适合机箱）- Choose cooler (height must fit case)
     build.cooler = choose(
         "cooler",
         predicate=(lambda p: build.case is None or p.height_mm <= build.case.height_mm),

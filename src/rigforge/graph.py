@@ -1,3 +1,18 @@
+"""
+RigForge 图引擎 - RigForge Graph Engine
+
+管理聊天对话流程，包括需求收集、配置推荐和回复生成。
+Manages chat conversation flow, including requirement collection, build recommendation, and reply generation.
+
+主要功能 Main Functions:
+1. 需求提取：从用户输入中提取装机需求
+2. 路由决策：判断是继续提问还是推荐配置
+3. 配置推荐：根据需求生成硬件配置方案
+4. 兼容性检查：验证配置方案的兼容性
+5. 回复生成：生成自然语言回复
+6. 性能跟踪：记录各环节的性能指标
+"""
+
 from __future__ import annotations
 
 import os
@@ -19,25 +34,87 @@ from langgraph.graph.message import add_messages
 from .schemas import BuildPlan, ChatResponse, RequirementUpdate, RequirementUpdateWithReply, UserRequirements
 from .tools import Toolset, pick_build_from_candidates
 
+# 全局锁与状态 - Global Lock and State
 _LLM_CALL_LOCK = threading.Lock()
+"""
+LLM 调用全局锁 - LLM Call Global Lock
+
+用于控制 LLM 调用的并发访问。
+Used to control concurrent access to LLM calls.
+"""
+
 _LAST_LLM_CALL_AT = 0.0
+"""
+上次 LLM 调用时间 - Last LLM Call Time
+
+记录上次 LLM 调用的时间戳，用于速率限制。
+Record timestamp of last LLM call for rate limiting.
+"""
+
 _AUTO_LLM = object()
+"""
+自动 LLM 选择标记 - Auto LLM Selection Marker
+
+用于标记 LLM 实例应该自动选择提供商。
+Marker to indicate LLM instance should auto-select provider.
+"""
+
 _PROVIDER_FAIL_UNTIL: Dict[str, float] = {"zhipu": 0.0, "openrouter": 0.0}
+"""
+提供商失败时间 - Provider Failure Time
 
+记录每个提供商的失败时间，用于熔断机制。
+Record failure time for each provider for circuit breaker mechanism.
+"""
 
+# 品牌规范化映射 - Brand Canonicalization Mapping
 _BRAND_CANON = {
     "intel": "Intel",
     "amd": "AMD",
     "nvidia": "NVIDIA",
 }
+"""
+品牌规范化映射 - Brand Canonicalization Mapping
+
+将品牌名称转换为标准格式。
+Convert brand names to standard format.
+"""
 
 
 def _canon_brand(value: str) -> str:
+    """
+    规范化品牌名称 - Canonicalize Brand Name
+    
+    将品牌名称转换为标准格式。
+    Convert brand name to standard format.
+    
+    参数 Parameters:
+        value: 品牌名称
+               Brand name
+    
+    返回 Returns:
+        标准化的品牌名称
+        Canonicalized brand name
+    """
     key = value.strip().lower()
     return _BRAND_CANON.get(key, value.strip())
 
 
 def _canon_brand_list(values: List[str] | None) -> List[str] | None:
+    """
+    规范化品牌列表 - Canonicalize Brand List
+    
+    将品牌列表转换为标准格式，去重。
+    Convert brand list to standard format, remove duplicates.
+    
+    参数 Parameters:
+        values: 品牌列表
+                Brand list
+    
+    返回 Returns:
+        标准化的品牌列表
+        Canonicalized brand list
+    """
     if values is None:
         return None
     out: List[str] = []
@@ -321,21 +398,76 @@ class RequirementExtractor:
                 (
                     "system",
                     "你是PC装机需求提取器。从用户输入中提取以下信息：\n"
-                    "- 预算范围 (budget_min, budget_max)\n"
-                    "- 用途 (use_case): gaming/video_editing/ai/office\n"
-                    "- 分辨率 (resolution): 1080p/1440p/4k\n"
-                    "- CPU偏好 (cpu_preference): Intel/AMD\n"
-                    "- 显卡偏好 (gpu_preference): NVIDIA/AMD/具体型号\n"
-                    "- 内存容量 (memory_gb): 数字\n"
-                    "- 存储容量 (storage_target_gb): 数字\n"
-                    "- 静音需求 (need_quiet): true/false\n"
-                    "- 品牌偏好 (prefer_brands)\n"
-                    "- 禁用品牌 (brand_blacklist)\n"
-                    "- 优先级 (priority): budget/balanced/performance\n"
-                    "\n"
-                    "重要：如果识别到某个字段，必须将对应的 *_set 字段设为 true！\n"
-                    "例如：识别到用途=办公，必须设置 use_case=['office'] 且 use_case_set=true\n"
-                    "直接输出JSON，不要markdown标记。",
+                    "- 预算范围 (budget_min, budget_max): 整数\n"
+                    "- 用途 (use_case): 列表，例如 [\"gaming\"] 或 [\"video_editing\", \"ai\"] 或 [\"office\"]\n"
+                    "- 分辨率 (resolution): 字符串，例如 \"1080p\" 或 \"1440p\" 或 \"4k\"\n"
+                    "- CPU偏好 (cpu_preference): 字符串，例如 \"Intel\" 或 \"AMD\"\n"
+                    "- 显卡偏好 (gpu_preference): 字符串，例如 \"NVIDIA\" 或 \"AMD\" 或具体型号\n"
+                    "- 内存容量 (memory_gb): 整数\n"
+                    "- 存储容量 (storage_target_gb): 整数\n"
+                    "- 静音需求 (need_quiet): 布尔值，true 或 false\n"
+                    "- 品牌偏好 (prefer_brands): 列表，例如 [\"Intel\", \"NVIDIA\"]\n"
+                    "- 禁用品牌 (brand_blacklist): 列表，例如 [\"某品牌\"]\n"
+                    "- 优先级 (priority): 字符串，只能是 \"budget\"、\"balanced\" 或 \"performance\"\n\n"
+                    "重要规则：\n"
+                    "- 如果识别到某个字段，必须将对应的 *_set 字段设为 true\n"
+                    "- 如果用户说\"办公\"，设置 use_case=[\"office\"] 和 use_case_set=true\n"
+                    "- 如果用户说\"游戏\"，设置 use_case=[\"gaming\"] 和 use_case_set=true\n"
+                    "- 如果用户说\"剪辑\"，设置 use_case=[\"video_editing\"] 和 use_case_set=true\n"
+                    "- 如果用户说\"AI\"，设置 use_case=[\"ai\"] 和 use_case_set=true\n"
+                    "- 如果用户说\"预算9000\"，设置 budget_min=9000, budget_max=9000, budget_set=true\n"
+                    "- 如果用户说\"预算8000-10000\"，设置 budget_min=8000, budget_max=10000, budget_set=true\n"
+                    "- 如果没有识别到某个字段，对应的字段设为 null，对应的 *_set 字段也设为 null\n\n"
+                    "输出格式：\n"
+                    "直接输出纯JSON格式，不要markdown标记，不要包含任何解释性文字。\n"
+                    "JSON格式如下：\n"
+                    "{{\n"
+                    "  \"budget_min\": 整数或null,\n"
+                    "  \"budget_max\": 整数或null,\n"
+                    "  \"budget_set\": true或false或null,\n"
+                    "  \"use_case\": 列表或null,\n"
+                    "  \"use_case_set\": true或false或null,\n"
+                    "  \"resolution\": 字符串或null,\n"
+                    "  \"resolution_set\": true或false或null,\n"
+                    "  \"cpu_preference\": 字符串或null,\n"
+                    "  \"cpu_set\": true或false或null,\n"
+                    "  \"gpu_preference\": 字符串或null,\n"
+                    "  \"gpu_set\": true或false或null,\n"
+                    "  \"memory_gb\": 整数或null,\n"
+                    "  \"memory_set\": true或false或null,\n"
+                    "  \"storage_target_gb\": 整数或null,\n"
+                    "  \"storage_set\": true或false或null,\n"
+                    "  \"need_quiet\": 布尔值或null,\n"
+                    "  \"noise_set\": true或false或null,\n"
+                    "  \"prefer_brands\": 列表或null,\n"
+                    "  \"brand_blacklist\": 列表或null,\n"
+                    "  \"priority\": 字符串或null\n"
+                    "}}\n\n"
+                    "示例：\n"
+                    "用户输入：\"预算9000，办公\"\n"
+                    "输出：\n"
+                    "{{\n"
+                    "  \"budget_min\": 9000,\n"
+                    "  \"budget_max\": 9000,\n"
+                    "  \"budget_set\": true,\n"
+                    "  \"use_case\": [\"office\"],\n"
+                    "  \"use_case_set\": true,\n"
+                    "  \"resolution\": null,\n"
+                    "  \"resolution_set\": null,\n"
+                    "  \"cpu_preference\": null,\n"
+                    "  \"cpu_set\": null,\n"
+                    "  \"gpu_preference\": null,\n"
+                    "  \"gpu_set\": null,\n"
+                    "  \"memory_gb\": null,\n"
+                    "  \"memory_set\": null,\n"
+                    "  \"storage_target_gb\": null,\n"
+                    "  \"storage_set\": null,\n"
+                    "  \"need_quiet\": null,\n"
+                    "  \"noise_set\": null,\n"
+                    "  \"prefer_brands\": null,\n"
+                    "  \"brand_blacklist\": null,\n"
+                    "  \"priority\": null\n"
+                    "}}",
                 ),
                 (
                     "human",

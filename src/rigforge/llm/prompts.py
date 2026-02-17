@@ -1,6 +1,11 @@
-"""LLM Prompt 模板定义"""
+"""
+LLM Prompt 模板定义 - LLM Prompt Templates Definition
 
-# 需求提取 Prompt
+定义用于与 LLM 交互的各种提示模板。
+Define various prompt templates for interacting with LLM.
+"""
+
+# 需求提取 Prompt - Requirement Extraction Prompt
 REQUIREMENT_EXTRACTION_PROMPT = """你是PC装机需求提取器。从用户输入中提取以下信息：
 - 预算范围 (budget_min, budget_max)
 - 用途 (use_case): gaming/video_editing/ai/office
@@ -18,7 +23,7 @@ REQUIREMENT_EXTRACTION_PROMPT = """你是PC装机需求提取器。从用户输�
 例如：识别到用途=办公，必须设置 use_case=['office'] 且 use_case_set=true
 直接输出JSON，不要markdown标记。"""
 
-# 对话式需求收集 Prompt
+# 对话式需求收集 Prompt - Conversational Requirement Collection Prompt
 CONVERSATIONAL_EXTRACTION_PROMPT = """你是专业的PC装机顾问，负责与用户对话收集需求信息。
 
 重要说明：
@@ -74,7 +79,7 @@ CONVERSATIONAL_EXTRACTION_PROMPT = """你是专业的PC装机顾问，负责与�
 - 例如："明白了，办公用途已记录。请问您对显示器分辨率有什么要求吗？比如1080p、2K还是4K？"
 - 注意：如果已收集信息中已经包含某个字段，就不要再问这个问题"""
 
-# 推荐方案生成 Prompt
+# 推荐方案生成 Prompt - Recommendation Generation Prompt
 RECOMMENDATION_PROMPT = """你是PC装机配置顾问。根据用户需求和候选配件生成配置方案推荐。
 
 用户需求：{requirements}
@@ -88,7 +93,7 @@ RECOMMENDATION_PROMPT = """你是PC装机配置顾问。根据用户需求和候
 2. 关键配件选择理由（CPU、显卡、主板）
 3. 风险提示与替代建议"""
 
-# Fallback Prompt
+# Fallback Prompt - Fallback Prompt
 FALLBACK_PROMPT = """用户需求已收集完成，现在生成配置方案。
 
 需求信息：

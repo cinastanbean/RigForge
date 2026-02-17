@@ -19,18 +19,108 @@ from .schemas import ChatResponse, UserRequirements
 
 @dataclass
 class SessionState:
+    """
+    会话状态数据类 - Session State Dataclass
+    
+    表示单个会话的状态信息，包括用户需求、对话历史、交互模式等。
+    Represents state information of a single session, including user requirements, conversation history, interaction mode, etc.
+    
+    字段说明 Field Descriptions:
+    - requirements: 用户需求对象
+    - history: 对话历史记录
+    - interaction_mode: 交互模式（对话/组件选择）
+    - enthusiasm_level: 热情度（标准/高）
+    - model_provider: 模型提供商
+    - model_status_detail: 模型状态详情
+    - template_history: 模板使用历史
+    - turns: 对话轮次
+    - has_recommendation: 是否已生成推荐
+    """
     requirements: UserRequirements = field(default_factory=UserRequirements)
+    """
+    用户需求 - User Requirements
+    
+    当前的用户需求状态。
+    Current user requirements state.
+    """
     history: List[Dict[str, str]] = field(default_factory=list)
+    """
+    对话历史 - Conversation History
+    
+    对话历史记录列表，每条记录包含 role 和 content。
+    List of conversation history records, each containing role and content.
+    """
     interaction_mode: Literal["chat", "component"] = "chat"
+    """
+    交互模式 - Interaction Mode
+    
+    交互模式：chat（对话模式）、component（组件选择模式）。
+    Interaction mode: chat or component.
+    """
     enthusiasm_level: Literal["standard", "high"] = "standard"
+    """
+    热情度 - Enthusiasm Level
+    
+    回复的热情度：standard（标准）、high（高）。
+    Reply enthusiasm level: standard or high.
+    """
     model_provider: Literal["zhipu", "openrouter", "rules"] | None = None
+    """
+    模型提供商 - Model Provider
+    
+    使用的模型提供商：zhipu、openrouter 或 rules。
+    Model provider used: zhipu, openrouter, or rules.
+    """
     model_status_detail: str = ""
+    """
+    模型状态详情 - Model Status Detail
+    
+    模型状态的详细信息。
+    Detailed information about model status.
+    """
     template_history: Dict[str, List[int]] = field(default_factory=dict)
+    """
+    模板历史 - Template History
+    
+    模板使用历史记录。
+    Template usage history.
+    """
     turns: int = 0
+    """
+    对话轮次 - Conversation Turns
+    
+    已进行的对话轮次数。
+    Number of conversation turns completed.
+    """
     has_recommendation: bool = False
+    """
+    是否已推荐 - Has Recommendation
+    
+    标记是否已生成推荐配置。
+    Flag indicating if recommendation has been generated.
+    """
 
 
 class ChatService:
+    """
+    聊天服务类 - Chat Service Class
+    
+    负责管理聊天会话、处理用户消息、维护会话状态和记录指标。
+    Manages chat sessions, processes user messages, maintains session state, and records metrics.
+    
+    主要功能 Main Functions:
+    1. 会话管理：创建、加载、保存、清理会话
+    2. 消息处理：调用图引擎处理用户消息
+    3. 状态维护：维护会话状态和对话历史
+    4. 指标记录：记录聊天事件和统计信息
+    5. 并发控制：使用锁机制保证线程安全
+    
+    会话存储方式 Session Storage:
+    - memory: 内存存储（默认，仅用于开发/测试）
+    - sqlite: SQLite 数据库存储（推荐用于生产环境）
+    - redis: Redis 存储（适用于分布式环境）
+    """
+    
     def __init__(
         self,
         graph: RigForgeGraph,
@@ -40,6 +130,23 @@ class ChatService:
         session_ttl_seconds: int | None = 7 * 24 * 3600,
         session_cleanup_interval_seconds: int = 3600,
     ):
+        """
+        初始化聊天服务 - Initialize chat service
+        
+        参数 Parameters:
+            graph: 图引擎实例，用于处理用户消息
+                   Graph engine instance for processing user messages
+            metrics_db_path: 指标数据库路径，如果为 None 则不记录指标
+                            Path to metrics database, if None then no metrics are recorded
+            session_store: 会话存储方式，可选 "memory"、"sqlite" 或 "redis"
+                          Session storage method, can be "memory", "sqlite", or "redis"
+            session_redis_url: Redis 连接 URL，仅当 session_store="redis" 时使用
+                              Redis connection URL, only used when session_store="redis"
+            session_ttl_seconds: 会话过期时间（秒），默认为 7 天
+                                Session TTL in seconds, default is 7 days
+            session_cleanup_interval_seconds: 会话清理间隔（秒），默认为 1 小时
+                                           Session cleanup interval in seconds, default is 1 hour
+        """
         self.graph = graph
         self.sessions: Dict[str, SessionState] = {}
         self._sessions_lock = threading.Lock()
@@ -55,6 +162,7 @@ class ChatService:
         self.session_ttl_seconds = max(0, int(session_ttl_seconds or 0))
         self.session_cleanup_interval_seconds = max(1, int(session_cleanup_interval_seconds))
 
+        # 初始化 Redis 客户端 - Initialize Redis client
         if self.session_store == "redis":
             if Redis is None:
                 raise RuntimeError("session_store=redis requires 'redis' package installed.")
@@ -64,17 +172,25 @@ class ChatService:
             # startup connectivity check for fail-fast behavior
             self._redis_client.ping()
 
+        # 初始化指标数据库 - Initialize metrics database
         if self.metrics_db_path:
             self._init_metrics_table()
             if self.session_store == "sqlite":
                 self._init_session_table()
                 self._cleanup_expired_sessions(force=True)
 
+        # 缓存模型提供商信息 - Cache model provider information
         self._cached_model_provider: Literal["zhipu", "openrouter", "rules"] | None = None
         self._cached_model_status_detail: str = ""
         self._initialize_model_provider()
 
     def _initialize_model_provider(self):
+        """
+        初始化模型提供商 - Initialize model provider
+        
+        在服务启动时检查并缓存模型提供商信息，避免每次会话都检查。
+        Check and cache model provider information at service startup to avoid checking for every session.
+        """
         provider, detail = self.graph.select_provider_for_session()
         self._cached_model_provider = provider
         self._cached_model_status_detail = detail
@@ -86,19 +202,55 @@ class ChatService:
         interaction_mode: Literal["chat", "component"] | None = None,
         enthusiasm_level: Literal["standard", "high"] | None = None,
     ) -> ChatResponse:
+        """
+        处理聊天消息 - Process chat message
+        
+        处理用户消息，更新会话状态，调用图引擎生成回复，并记录指标。
+        Process user message, update session state, call graph engine to generate reply, and record metrics.
+        
+        处理流程 Processing Flow:
+        1. 获取会话锁，确保线程安全
+        2. 加载或创建会话状态
+        3. 更新会话配置（交互模式、热情度）
+        4. 获取上一条助手回复
+        5. 调用图引擎处理消息
+        6. 更新会话状态（需求、历史、轮次）
+        7. 记录指标事件
+        8. 保存会话状态
+        9. 清理过期会话和内存缓存
+        10. 返回聊天响应
+        
+        参数 Parameters:
+            session_id: 会话 ID
+                       Session ID
+            message: 用户消息
+                     User message
+            interaction_mode: 交互模式，如果为 None 则使用会话的默认模式
+                            Interaction mode, if None then use session's default mode
+            enthusiasm_level: 热情度，如果为 None 则使用会话的默认热情度
+                            Enthusiasm level, if None then use session's default level
+        
+        返回 Returns:
+            聊天响应，包含回复、需求、配置方案等信息
+            Chat response, including reply, requirements, build plan, etc.
+        """
         session_lock = self._get_session_lock(session_id)
         with session_lock:
             now = time.monotonic()
             self._session_last_seen[session_id] = now
             
+            # 创建性能跟踪器 - Create performance tracker
             tracker = PerformanceTracker(f"chat session {session_id}")
             
+            # 加载或创建会话 - Load or create session
             session = self.sessions.get(session_id)
             if session is None:
                 session = self._load_session_state(session_id)
             if session is None:
                 session = SessionState()
             self.sessions[session_id] = session
+            
+            # 更新会话配置 - Update session configuration
             if interaction_mode in ("chat", "component"):
                 session.interaction_mode = interaction_mode
             if enthusiasm_level in ("standard", "high"):
@@ -107,12 +259,14 @@ class ChatService:
                 session.model_provider = self._cached_model_provider
                 session.model_status_detail = self._cached_model_status_detail
 
+            # 获取上一条助手回复 - Get last assistant reply
             last_assistant_reply = ""
             for item in reversed(session.history):
                 if item.get("role") == "assistant":
                     last_assistant_reply = item.get("content", "")
                     break
 
+            # 调用图引擎处理消息 - Call graph engine to process message
             next_turn = session.turns + 1
             result = self.graph.invoke(
                 message,
@@ -124,6 +278,8 @@ class ChatService:
                 template_history=session.template_history,
                 interaction_mode=session.interaction_mode,
             )
+            
+            # 更新会话状态 - Update session state
             session.requirements = result.requirements
             session.template_history = result.template_history
             session.turns = next_turn
@@ -132,8 +288,10 @@ class ChatService:
             session.history.append({"role": "user", "content": message})
             session.history.append({"role": "assistant", "content": result.reply})
             
+            # 完成性能跟踪 - Finish performance tracking
             tracker.finish()
             
+            # 记录指标事件 - Record metric event
             self._record_metric_event(
                 session_id=session_id,
                 enthusiasm_level=session.enthusiasm_level,
@@ -142,13 +300,33 @@ class ChatService:
                 response_mode=result.response_mode,
                 fallback_reason=result.fallback_reason,
             )
+            
+            # 保存会话状态 - Save session state
             self._save_session_state(session_id, session)
+            
+            # 清理过期会话和内存缓存 - Cleanup expired sessions and memory cache
             self._cleanup_expired_sessions()
             self._cleanup_in_memory_cache()
+            
+            # 返回结果 - Return result
             result.model_status_detail = session.model_status_detail
             return result
 
     def _get_session_lock(self, session_id: str) -> threading.Lock:
+        """
+        获取会话锁 - Get session lock
+        
+        为指定会话获取或创建锁，用于保证线程安全。
+        Get or create lock for specified session, used to ensure thread safety.
+        
+        参数 Parameters:
+            session_id: 会话 ID
+                       Session ID
+        
+        返回 Returns:
+            会话锁对象
+            Session lock object
+        """
         with self._sessions_lock:
             lock = self._session_locks.get(session_id)
             if lock is None:
@@ -158,6 +336,16 @@ class ChatService:
             return lock
 
     def metrics(self) -> dict:
+        """
+        获取指标统计 - Get metrics statistics
+        
+        返回聊天服务的指标统计信息，包括总会话数、总轮次、平均轮次等。
+        Returns metrics statistics of chat service, including total sessions, total turns, average turns, etc.
+        
+        返回 Returns:
+            指标统计字典
+            Metrics statistics dictionary
+        """
         if self.metrics_db_path:
             return self._metrics_from_db()
 
@@ -187,6 +375,12 @@ class ChatService:
         }
 
     def _init_metrics_table(self) -> None:
+        """
+        初始化指标表 - Initialize metrics table
+        
+        在 SQLite 数据库中创建聊天事件表，用于记录指标。
+        Create chat events table in SQLite database for recording metrics.
+        """
         assert self.metrics_db_path is not None
         self.metrics_db_path.parent.mkdir(parents=True, exist_ok=True)
         with sqlite3.connect(self.metrics_db_path) as conn:
@@ -207,6 +401,12 @@ class ChatService:
             conn.commit()
 
     def _init_session_table(self) -> None:
+        """
+        初始化会话表 - Initialize session table
+        
+        在 SQLite 数据库中创建会话状态表，用于持久化会话状态。
+        Create session state table in SQLite database for persisting session state.
+        """
         assert self.metrics_db_path is not None
         with sqlite3.connect(self.metrics_db_path) as conn:
             conn.execute(
@@ -228,6 +428,20 @@ class ChatService:
             conn.commit()
 
     def _load_session_state(self, session_id: str) -> SessionState | None:
+        """
+        加载会话状态 - Load session state
+        
+        从存储中加载会话状态。
+        Load session state from storage.
+        
+        参数 Parameters:
+            session_id: 会话 ID
+                       Session ID
+        
+        返回 Returns:
+            会话状态对象，如果不存在则返回 None
+            Session state object, or None if not found
+        """
         if self.session_store == "memory":
             return None
         if self.session_store == "redis":
@@ -282,6 +496,18 @@ class ChatService:
         )
 
     def _save_session_state(self, session_id: str, session: SessionState) -> None:
+        """
+        保存会话状态 - Save session state
+        
+        将会话状态保存到存储中。
+        Save session state to storage.
+        
+        参数 Parameters:
+            session_id: 会话 ID
+                       Session ID
+            session: 会话状态对象
+                     Session state object
+        """
         if self.session_store == "memory":
             return
         if self.session_store == "redis":
@@ -348,9 +574,33 @@ class ChatService:
 
     @staticmethod
     def _redis_key(session_id: str) -> str:
+        """
+        生成 Redis 键 - Generate Redis key
+        
+        为会话 ID 生成 Redis 键。
+        Generate Redis key for session ID.
+        
+        参数 Parameters:
+            session_id: 会话 ID
+                       Session ID
+        
+        返回 Returns:
+            Redis 键字符串
+            Redis key string
+        """
         return f"rigforge:session:{session_id}"
 
     def _cleanup_expired_sessions(self, force: bool = False) -> None:
+        """
+        清理过期会话 - Cleanup expired sessions
+        
+        清理 SQLite 数据库中的过期会话。
+        Cleanup expired sessions in SQLite database.
+        
+        参数 Parameters:
+            force: 是否强制清理，忽略时间间隔
+                   Whether to force cleanup, ignoring time interval
+        """
         if self.session_store != "sqlite":
             return
         if not self.metrics_db_path:
@@ -378,6 +628,16 @@ class ChatService:
             self._last_session_cleanup_monotonic = now
 
     def _cleanup_in_memory_cache(self, force: bool = False) -> None:
+        """
+        清理内存缓存 - Cleanup in-memory cache
+        
+        清理内存中的过期会话和锁。
+        Cleanup expired sessions and locks in memory.
+        
+        参数 Parameters:
+            force: 是否强制清理，忽略时间间隔
+                   Whether to force cleanup, ignoring time interval
+        """
         if self.session_ttl_seconds <= 0:
             return
         now = time.monotonic()
@@ -415,6 +675,26 @@ class ChatService:
         response_mode: str,
         fallback_reason: str | None,
     ) -> None:
+        """
+        记录指标事件 - Record metric event
+        
+        记录聊天事件到指标数据库。
+        Record chat event to metrics database.
+        
+        参数 Parameters:
+            session_id: 会话 ID
+                       Session ID
+            enthusiasm_level: 热情度
+                              Enthusiasm level
+            turn_number: 轮次号
+                         Turn number
+            has_recommendation: 是否已推荐
+                                Whether recommendation has been generated
+            response_mode: 响应模式
+                            Response mode
+            fallback_reason: 回退原因
+                             Fallback reason
+        """
         if not self.metrics_db_path:
             return
         with sqlite3.connect(self.metrics_db_path) as conn:
@@ -436,6 +716,16 @@ class ChatService:
             conn.commit()
 
     def _metrics_from_db(self) -> dict:
+        """
+        从数据库获取指标 - Get metrics from database
+        
+        从 SQLite 数据库中读取并计算指标统计信息。
+        Read and calculate metrics statistics from SQLite database.
+        
+        返回 Returns:
+            指标统计字典
+            Metrics statistics dictionary
+        """
         assert self.metrics_db_path is not None
         with sqlite3.connect(self.metrics_db_path) as conn:
             rows = conn.execute(
