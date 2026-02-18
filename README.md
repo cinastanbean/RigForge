@@ -206,7 +206,7 @@ Open: [http://127.0.0.1:8000](http://127.0.0.1:8000)
 | Variable | Default | Description |
 |---|---|---|
 | `ZHIPU_API_KEY` | - | 智谱 API Key |
-| `ZHIPU_MODEL` | `GLM-4-Flash` | 智谱模型名称 |
+| `ZHIPU_MODEL` | `glm-4.7-flash` | 智谱模型名称 |
 | `ZHIPU_BASE_URL` | `https://open.bigmodel.cn/api/paas/v4/` | 智谱 API 地址 |
 | `OPENROUTER_API_KEY` | - | OpenRouter API Key |
 | `OPENROUTER_MODEL` | `openrouter/free` | OpenRouter 模型名称 |

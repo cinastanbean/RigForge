@@ -198,9 +198,7 @@ def invoke_with_rate_limit(invoke_fn):
         _LAST_LLM_CALL_AT = target_at
     wait = max(0.0, target_at - time.monotonic())
     if wait > 0:
-        print(f"[PERF] Rate limit wait: {wait:.3f}s")
         time.sleep(wait)
-    print(f"[PERF] Rate limit overhead: {time.time() - start:.3f}s")
     return invoke_fn()
 
 
@@ -232,17 +230,7 @@ class PerformanceTracker:
             self.sub_timers[self.current_timer] = self.sub_timers.get(self.current_timer, 0) + (time.time() - self.current_start)
             self.current_timer = None
             self.current_start = None
-        
-        total_time = time.time() - self.start_time
-        print(f"\n{'='*60}")
-        print(f"[PERF] {self.name} completed in {total_time:.3f}s")
-        if self.sub_timers:
-            sorted_timers = sorted(self.sub_timers.items(), key=lambda x: x[1], reverse=True)
-            for timer_name, timer_time in sorted_timers:
-                percentage = (timer_time / total_time) * 100 if total_time > 0 else 0
-                print(f"  - {timer_name}: {timer_time:.3f}s ({percentage:.1f}%)")
-        print(f"{'='*60}\n")
-        return total_time
+        return time.time() - self.start_time
 
 
 def invoke_with_turn_timeout(invoke_fn, timeout_seconds: Optional[float] = None):
@@ -264,21 +252,16 @@ def invoke_with_turn_timeout(invoke_fn, timeout_seconds: Optional[float] = None)
             thread.join(timeout=timeout_seconds)
             
             if thread.is_alive():
-                elapsed = time.time() - start
-                print(f"[PERF] LLM call timed out after {elapsed:.3f}s (timeout={timeout_seconds}s)")
                 raise TimeoutError(f"LLM call timed out after {timeout_seconds}s")
-            
+
             if exception[0]:
                 raise exception[0]
-            
-            elapsed = time.time() - start
+
             return result[0]
         else:
             result = invoke_fn()
             return result
     except Exception as err:
-        elapsed = time.time() - start
-        print(f"[PERF] LLM call failed after {elapsed:.3f}s: {err}")
         raise
 
 
@@ -384,11 +367,10 @@ class RequirementExtractor:
     def extract(self, text: str, current: UserRequirements, llm=None) -> RequirementUpdate:
         if llm is None:
             return self._extract_with_rules(text, current)
-        
+
         # 检查缓存
         cache_key = self._cache_key(text, current)
         if cache_key in self._cache:
-            print(f"[CACHE] 命中缓存，跳过 LLM 调用")
             return self._cache[cache_key]
 
         start = time.time()
@@ -475,27 +457,18 @@ class RequirementExtractor:
                 ),
             ]
         )
-        print(f"[PERF] Prompt built in {time.time() - start:.3f}s")
-        
+
         try:
-            structured_start = time.time()
             structured = llm.with_structured_output(RequirementUpdate)
-            print(f"[PERF] Structured output setup in {time.time() - structured_start:.3f}s")
-            
+
             # 构建增量信息，只发送已收集的信息摘要，而非完整 JSON
             collected_summary = self._build_collected_summary(current)
-            
+
             model_input = {
-                "collected": collected_summary,  # 简洁摘要，而非完整 JSON
+                "collected": collected_summary,
                 "text": text
             }
-            print(f"\n{'='*60}")
-            print(f"[LLM INPUT #1] 需求提取")
-            print(f"  已收集: {collected_summary}")
-            print(f"  用户输入: {text}")
-            print(f"{'='*60}\n")
-            
-            invoke_start = time.time()
+
             result = invoke_with_turn_timeout(
                 lambda: invoke_with_rate_limit(
                     lambda: (prompt | structured).invoke(
@@ -503,24 +476,12 @@ class RequirementExtractor:
                     )
                 )
             )
-            
-            # 显示模型输出
-            print(f"\n{'='*60}")
-            print(f"[LLM OUTPUT #1] 需求提取结果:")
-            print(f"  {result.model_dump_json()[:500]}...")
-            print(f"{'='*60}\n")
-            
+
             # 存入缓存
             self._cache[cache_key] = result
-            
-            print(f"[PERF] Total extract() call: {time.time() - start:.3f}s")
+
             return result
         except Exception as e:
-            print(f"[PERF] Extract failed after {time.time() - start:.3f}s, falling back to rules: {e}")
-            print(f"[DEBUG] Exception type: {type(e).__name__}")
-            print(f"[DEBUG] Exception details: {str(e)}")
-            import traceback
-            print(f"[DEBUG] Traceback:\n{traceback.format_exc()}")
             return self._extract_with_rules(text, current)
 
     def extract_and_reply(self, text: str, current: UserRequirements, llm=None, follow_up_questions: List[str] = None, enthusiasm_level: str = "standard") -> RequirementUpdateWithReply:
@@ -606,52 +567,25 @@ class RequirementExtractor:
                 ),
             ]
         )
-        print(f"[PERF] Prompt built in {time.time() - start:.3f}s")
-        
+
         try:
-            structured_start = time.time()
             structured = llm.with_structured_output(RequirementUpdateWithReply)
-            print(f"[PERF] Structured output setup in {time.time() - structured_start:.3f}s")
-            
+
             model_input = {
                 "collected": collected_summary,
                 "text": text,
                 "follow_style": follow_style,
             }
-            
-            print(f"\n{'='*60}")
-            print(f"[LLM INPUT] 对话式需求收集")
-            print(f"  已收集信息: {collected_summary}")
-            print(f"  用户输入: {text}")
-            print(f"  语气风格: {follow_style}")
-            print(f"{'='*60}\n")
-            
-            print(f"[DEBUG] About to invoke LLM...")
-            invoke_start = time.time()
+
             result = invoke_with_turn_timeout(
                 lambda: invoke_with_rate_limit(
                     lambda: (prompt | structured).invoke(model_input)
                 ),
                 timeout_seconds=60.0
             )
-            invoke_time = time.time() - invoke_start
-            print(f"[DEBUG] LLM invoke completed successfully in {invoke_time:.3f}s")
-            
-            print(f"\n{'='*60}")
-            print(f"[LLM OUTPUT] 对话式需求收集结果")
-            print(f"  需求更新: {result.requirement_update.model_dump_json()}")
-            print(f"  回复内容: {result.reply}")
-            print(f"  继续提问: {result.should_continue}")
-            print(f"{'='*60}\n")
-            
-            print(f"[PERF] Total extract_and_reply() call: {time.time() - start:.3f}s")
+
             return result
         except Exception as e:
-            print(f"[PERF] Extract and reply failed after {time.time() - start:.3f}s, falling back to rules: {e}")
-            print(f"[DEBUG] Exception type: {type(e).__name__}")
-            print(f"[DEBUG] Exception details: {str(e)}")
-            import traceback
-            print(f"[DEBUG] Traceback:\n{traceback.format_exc()}")
             update = self._extract_with_rules(text, current)
             reply = self._generate_fallback_reply(update, follow_up_questions, enthusiasm_level)
             return RequirementUpdateWithReply(requirement_update=update, reply=reply, should_continue=True)
@@ -828,19 +762,15 @@ def merge_requirements(current: UserRequirements, update: RequirementUpdate) -> 
             continue
         if value is not None:
             payload[key] = value
-    
-    # 调试日志：输出CPU偏好
-    if update.cpu_preference is not None:
-        print(f"[DEBUG] 更新CPU偏好: '{update.cpu_preference}' -> '{_canon_brand(update.cpu_preference)}'")
+
+    # 规范化CPU偏好
     if payload.get("cpu_preference"):
         payload["cpu_preference"] = _canon_brand(payload["cpu_preference"])
-        print(f"[DEBUG] 合并后的CPU偏好: '{payload['cpu_preference']}'")
-    
+
     payload["prefer_brands"] = _canon_brand_list(payload.get("prefer_brands")) or []
     payload["brand_blacklist"] = _canon_brand_list(payload.get("brand_blacklist")) or []
-    
+
     result = UserRequirements.model_validate(payload)
-    print(f"[DEBUG] 最终CPU偏好: '{result.cpu_preference}'")
     return result
 
 
@@ -1131,7 +1061,6 @@ class RigForgeGraph:
         else:
             route = "ask_more"
         
-        print(f"[DEBUG] Route decision: LLM={llm_based_route}, Rule={rule_based_route}, Final={route}")
         tracker.end()
         
         return {
@@ -1147,30 +1076,21 @@ class RigForgeGraph:
 
     def _rule_based_route_decision(self, merged: UserRequirements, user_input: str, turn_number: int, max_turns: int) -> str:
         """规则引擎判断是否应该结束对话"""
-        
-        print(f"[DEBUG] Rule-based route decision:")
-        print(f"[DEBUG]   Turn number: {turn_number}/{max_turns}")
-        print(f"[DEBUG]   User input: {user_input}")
-        print(f"[DEBUG]   Budget set: {merged.budget_set}")
-        print(f"[DEBUG]   Use case set: {merged.use_case_set}")
-        print(f"[DEBUG]   Resolution set: {merged.resolution_set}")
-        
+
         # 1. 检查对话轮数是否超过限制
         if turn_number >= max_turns:
-            print(f"[DEBUG] Rule: Turn number {turn_number} >= max_turns {max_turns}, recommend")
             return "recommend"
-        
+
         # 2. 检查用户输入是否包含结束对话的关键词
         stop_keywords = [
-            "不用了", "够了", "就这样", "不用再问", "可以了", "没问题", 
-            "行", "OK", "ok", "开始推荐", "推荐吧", "给我推荐", 
-            "随便推荐", "随便给我推荐", "随便给我推荐个吧", "随便", 
+            "不用了", "够了", "就这样", "不用再问", "可以了", "没问题",
+            "行", "OK", "ok", "开始推荐", "推荐吧", "给我推荐",
+            "随便推荐", "随便给我推荐", "随便给我推荐个吧", "随便",
             "都可以", "你看着办", "你决定"
         ]
         if any(keyword in user_input for keyword in stop_keywords):
-            print(f"[DEBUG] Rule: Stop keyword found in user input, recommend")
             return "recommend"
-        
+
         # 3. 检查是否收集到足够的关键信息（预算、用途、分辨率）
         key_fields_collected = 0
         if merged.budget_set:
@@ -1179,26 +1099,21 @@ class RigForgeGraph:
             key_fields_collected += 1
         if merged.resolution_set:
             key_fields_collected += 1
-        
-        print(f"[DEBUG]   Key fields collected: {key_fields_collected}/3")
-        
+
         # 如果收集到3个关键信息，可以考虑结束对话
         if key_fields_collected >= 3:
-            print(f"[DEBUG] Rule: {key_fields_collected} key fields collected, recommend")
             return "recommend"
-        
+
         # 如果收集到2个关键信息，且对话轮数较多，也可以考虑结束对话
         if key_fields_collected >= 2 and turn_number >= 5:
-            print(f"[DEBUG] Rule: {key_fields_collected} key fields collected and turn_number {turn_number} >= 5, recommend")
             return "recommend"
-        
+
         # 否则继续提问
-        print(f"[DEBUG] Rule: {key_fields_collected} key fields collected, ask_more")
         return "ask_more"
 
     def _collect_requirements_component_mode(self, state: GraphState, current: UserRequirements, user_input: str, last_assistant_reply: str, tracker: PerformanceTracker):
         tracker.start("LLM setup")
-        llm = self._runtime_llm(state.get("model_provider", "rules"), 0) if True else None
+        llm = self._runtime_llm(state.get("model_provider", "rules"), 0)
         tracker.end()
         
         tracker.start("extract")
@@ -1350,8 +1265,7 @@ class RigForgeGraph:
             response_text = questions[0] if len(questions) == 1 else "、".join(questions)
         else:
             response_text = existing_response
-        
-        print(f"[PERF] generate_follow_up took {time.time() - start:.3f}s")
+
         return {"follow_up_questions": questions, "response_text": response_text}
 
     def recommend_build(self, state: GraphState):
@@ -1464,17 +1378,7 @@ class RigForgeGraph:
                     "power": state.get("estimated_power", 0),
                     "recommend_style": recommend_style,
                 }
-                
-                print(f"\n{'='*60}")
-                print(f"[LLM INPUT] 推荐配置回复生成")
-                print(f"  需求: {req.model_dump_json()[:300]}...")
-                print(f"  配置: {build.model_dump_json()[:300]}...")
-                print(f"  兼容性问题: {issues}")
-                print(f"  总价: {build.total_price()}")
-                print(f"  功耗: {state.get('estimated_power', 0)}")
-                print(f"  推荐风格: {recommend_style}")
-                print(f"{'='*60}\n")
-                
+
                 tracker.start("LLM invoke")
                 recommendation_reply = invoke_with_rate_limit(
                     lambda: invoke_with_turn_timeout(
@@ -1483,15 +1387,9 @@ class RigForgeGraph:
                     )
                 )
                 tracker.end()
-                
-                print(f"\n{'='*60}")
-                print(f"[LLM OUTPUT] 推荐配置回复结果")
-                print(f"  回复内容: {recommendation_reply}")
-                print(f"  回复长度: {len(recommendation_reply)}")
-                print(f"{'='*60}\n")
-                
+
                 combined_reply = f"{existing_reply}\n\n{recommendation_reply}"
-                
+
                 tracker.finish()
                 return {
                     "response_text": combined_reply,
@@ -1500,11 +1398,6 @@ class RigForgeGraph:
                     "template_history": state.get("template_history", {}),
                 }
             except Exception as err:
-                print(f"[PERF] recommend LLM failed, falling back: {err}")
-                print(f"[DEBUG] Exception type: {type(err).__name__}")
-                import traceback
-                print(f"[DEBUG] Traceback:\n{traceback.format_exc()}")
-                fallback_start = time.time()
                 fallback_reply, _ = self._fallback_reply(
                     build,
                     issues,
@@ -1514,11 +1407,9 @@ class RigForgeGraph:
                     user_input=state.get("user_input", ""),
                     template_history=state.get("template_history", {}),
                 )
-                print(f"[PERF] recommend fallback took {time.time() - fallback_start:.3f}s")
-                
+
                 combined_reply = f"{existing_reply}\n\n{fallback_reply}"
-                print(f"[PERF] _compose_recommendation_reply total took {time.time() - start:.3f}s")
-                
+
                 return {
                     "response_text": combined_reply,
                     "response_mode": "fallback",
@@ -1526,8 +1417,6 @@ class RigForgeGraph:
                     "template_history": state.get("template_history", {}),
                 }
         else:
-            print(f"[PERF] No LLM available, using fallback")
-            fallback_start = time.time()
             fallback_reply, _ = self._fallback_reply(
                 build,
                 issues,
@@ -1537,11 +1426,9 @@ class RigForgeGraph:
                 user_input=state.get("user_input", ""),
                 template_history=state.get("template_history", {}),
             )
-            print(f"[PERF] recommend fallback (no LLM) took {time.time() - fallback_start:.3f}s")
-            
+
             combined_reply = f"{existing_reply}\n\n{fallback_reply}"
-            print(f"[PERF] _compose_recommendation_reply total took {time.time() - start:.3f}s")
-            
+
             return {
                 "response_text": combined_reply,
                 "response_mode": "fallback",
@@ -1550,39 +1437,31 @@ class RigForgeGraph:
             }
 
     def compose_reply(self, state: GraphState):
-        start = time.time()
         interaction_mode = state.get("interaction_mode", "chat")
         route = state.get("route", "ask_more")
-        
+
         if interaction_mode == "chat":
             existing_reply = state.get("response_text", "")
             if route == "recommend":
-                # 即使 response_text 为空，也应该生成推荐配置
-                print(f"[DEBUG] Chat mode with route=recommend, generating recommendation reply")
-                print(f"[DEBUG] Existing reply: {existing_reply}")
                 return self._compose_recommendation_reply(state, existing_reply)
             elif existing_reply:
-                print(f"[PERF] compose_reply skipped, using existing response_text (chat mode)")
                 return {
                     "response_text": existing_reply,
                     "response_mode": state.get("response_mode", "fallback"),
                     "fallback_reason": state.get("fallback_reason"),
                     "template_history": state.get("template_history", {}),
                 }
-        
+
         # 判断是否需要 LLM 生成追问回复
         user_input = state.get("user_input", "")
         questions = state.get("follow_up_questions", [])
-        
+
         # 暂时屏蔽简单判断逻辑，所有回答都优先走大模型
-        use_llm_for_reply = True  # 强制使用 LLM
-        
-        llm_setup_start = time.time()
+        use_llm_for_reply = True
+
         llm = self._runtime_llm(state.get("model_provider", "rules"), 0.2) if use_llm_for_reply else None
-        print(f"[PERF] compose_reply LLM setup took {time.time() - llm_setup_start:.3f}s (use_llm={use_llm_for_reply})")
-        
+
         template_history = deepcopy(state.get("template_history", {}))
-        print(f"[PERF] compose_reply started")
         level = state.get("enthusiasm_level", "standard")
         effective_level = self._effective_enthusiasm_level(level, state.get("turn_number", 1))
         follow_style, recommend_style = self._enthusiasm_instructions(effective_level)
@@ -1590,7 +1469,6 @@ class RigForgeGraph:
             questions = state["follow_up_questions"]
             if llm:
                 try:
-                    prompt_start = time.time()
                     follow_prompt = ChatPromptTemplate.from_messages(
                         [
                             (
@@ -1601,22 +1479,13 @@ class RigForgeGraph:
                             ("human", "用户输入: {user_input}\n待问: {questions}"),
                         ]
                     )
-                    print(f"[PERF] follow_prompt built in {time.time() - prompt_start:.3f}s")
-                    
-                    # 显示模型输入
+
                     model_input = {
                         "user_input": state.get("user_input", ""),
                         "questions": "\n".join(f"- {q}" for q in questions),
                         "follow_style": follow_style,
                     }
-                    print(f"\n{'='*60}")
-                    print(f"[LLM INPUT #2] 追问回复生成")
-                    print(f"  用户输入: {model_input['user_input']}")
-                    print(f"  问题列表: {model_input['questions']}")
-                    print(f"  语气风格: {follow_style}")
-                    print(f"{'='*60}\n")
-                    
-                    invoke_start = time.time()
+
                     reply = invoke_with_rate_limit(
                         lambda: invoke_with_turn_timeout(
                             lambda: (follow_prompt | llm).invoke(
@@ -1625,23 +1494,10 @@ class RigForgeGraph:
                             timeout_seconds=60.0
                         )
                     )
-                    invoke_time = time.time() - invoke_start
-                    
-                    # 显示模型输出
-                    print(f"\n{'='*60}")
-                    print(f"[LLM OUTPUT #2] 追问回复结果")
-                    print(f"  回复内容: {reply}")
-                    print(f"  回复长度: {len(reply)}")
-                    print(f"  调用耗时: {invoke_time:.3f}s")
-                    print(f"{'='*60}\n")
-                    
-                    print(f"[PERF] follow_up LLM invoke took {time.time() - invoke_start:.3f}s")
-                    
+
                     response_mode = "llm"
                     fallback_reason = None
                 except Exception as err:
-                    print(f"[PERF] follow_up LLM failed, falling back: {err}")
-                    fallback_start = time.time()
                     reply, template_history = self._fallback_followup_reply(
                         questions,
                         effective_level,
@@ -1649,11 +1505,9 @@ class RigForgeGraph:
                         user_input=state.get("user_input", ""),
                         template_history=template_history,
                     )
-                    print(f"[PERF] follow_up fallback took {time.time() - fallback_start:.3f}s")
                     response_mode = "fallback"
                     fallback_reason = self._classify_fallback_reason(err)
             else:
-                fallback_start = time.time()
                 reply, template_history = self._fallback_followup_reply(
                     questions,
                     effective_level,
@@ -1661,10 +1515,8 @@ class RigForgeGraph:
                     user_input=state.get("user_input", ""),
                     template_history=template_history,
                 )
-                print(f"[PERF] follow_up fallback (no LLM) took {time.time() - fallback_start:.3f}s")
                 response_mode = "fallback"
                 fallback_reason = "no_model_config"
-            print(f"[PERF] compose_reply total took {time.time() - start:.3f}s")
             return {
                 "response_text": reply,
                 "response_mode": response_mode,
@@ -1697,8 +1549,7 @@ class RigForgeGraph:
                         ),
                     ]
                 )
-                print(f"[PERF] recommend_prompt built in {time.time() - prompt_start:.3f}s")
-                
+
                 model_input = {
                     "req": req.model_dump_json(),
                     "build": build.model_dump_json(),
@@ -1707,18 +1558,7 @@ class RigForgeGraph:
                     "power": state.get("estimated_power", 0),
                     "recommend_style": recommend_style,
                 }
-                
-                print(f"\n{'='*60}")
-                print(f"[LLM INPUT] 推荐配置回复生成（非对话模式）")
-                print(f"  需求: {req.model_dump_json()[:300]}...")
-                print(f"  配置: {build.model_dump_json()[:300]}...")
-                print(f"  兼容性问题: {issues}")
-                print(f"  总价: {build.total_price()}")
-                print(f"  功耗: {state.get('estimated_power', 0)}")
-                print(f"  推荐风格: {recommend_style}")
-                print(f"{'='*60}\n")
-                
-                invoke_start = time.time()
+
                 reply = invoke_with_rate_limit(
                     lambda: invoke_with_turn_timeout(
                         lambda: (prompt | llm).invoke(
@@ -1727,20 +1567,10 @@ class RigForgeGraph:
                         timeout_seconds=60.0
                     )
                 )
-                invoke_time = time.time() - invoke_start
-                print(f"[PERF] recommend LLM invoke took {invoke_time:.3f}s")
-                
-                print(f"\n{'='*60}")
-                print(f"[LLM OUTPUT] 推荐配置回复结果（非对话模式）")
-                print(f"  回复内容: {reply}")
-                print(f"  回复长度: {len(reply)}")
-                print(f"{'='*60}\n")
-                
+
                 response_mode = "llm"
                 fallback_reason = None
             except Exception as err:
-                print(f"[PERF] recommend LLM failed, falling back: {err}")
-                fallback_start = time.time()
                 reply, template_history = self._fallback_reply(
                     build,
                     issues,
@@ -1750,11 +1580,9 @@ class RigForgeGraph:
                     user_input=state.get("user_input", ""),
                     template_history=template_history,
                 )
-                print(f"[PERF] recommend fallback took {time.time() - fallback_start:.3f}s")
                 response_mode = "fallback"
                 fallback_reason = self._classify_fallback_reason(err)
         else:
-            fallback_start = time.time()
             reply, template_history = self._fallback_reply(
                 build,
                 issues,
@@ -1764,10 +1592,8 @@ class RigForgeGraph:
                 user_input=state.get("user_input", ""),
                 template_history=template_history,
             )
-            print(f"[PERF] recommend fallback (no LLM) took {time.time() - fallback_start:.3f}s")
             response_mode = "fallback"
             fallback_reason = "no_model_config"
-        print(f"[PERF] compose_reply total took {time.time() - start:.3f}s")
 
         return {
             "response_text": reply,
