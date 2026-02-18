@@ -828,11 +828,20 @@ def merge_requirements(current: UserRequirements, update: RequirementUpdate) -> 
             continue
         if value is not None:
             payload[key] = value
+    
+    # 调试日志：输出CPU偏好
+    if update.cpu_preference is not None:
+        print(f"[DEBUG] 更新CPU偏好: '{update.cpu_preference}' -> '{_canon_brand(update.cpu_preference)}'")
     if payload.get("cpu_preference"):
         payload["cpu_preference"] = _canon_brand(payload["cpu_preference"])
+        print(f"[DEBUG] 合并后的CPU偏好: '{payload['cpu_preference']}'")
+    
     payload["prefer_brands"] = _canon_brand_list(payload.get("prefer_brands")) or []
     payload["brand_blacklist"] = _canon_brand_list(payload.get("brand_blacklist")) or []
-    return UserRequirements.model_validate(payload)
+    
+    result = UserRequirements.model_validate(payload)
+    print(f"[DEBUG] 最终CPU偏好: '{result.cpu_preference}'")
+    return result
 
 
 def ensure_budget_fit(req: UserRequirements, build: BuildPlan) -> BuildPlan:
@@ -1545,13 +1554,14 @@ class RigForgeGraph:
         interaction_mode = state.get("interaction_mode", "chat")
         route = state.get("route", "ask_more")
         
-        if interaction_mode == "chat" and state.get("response_text"):
+        if interaction_mode == "chat":
             existing_reply = state.get("response_text", "")
             if route == "recommend":
+                # 即使 response_text 为空，也应该生成推荐配置
                 print(f"[DEBUG] Chat mode with route=recommend, generating recommendation reply")
                 print(f"[DEBUG] Existing reply: {existing_reply}")
                 return self._compose_recommendation_reply(state, existing_reply)
-            else:
+            elif existing_reply:
                 print(f"[PERF] compose_reply skipped, using existing response_text (chat mode)")
                 return {
                     "response_text": existing_reply,

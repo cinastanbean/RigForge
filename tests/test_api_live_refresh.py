@@ -48,7 +48,7 @@ def test_lowercase_intel_never_falls_back_to_amd_in_same_session():
             "session_id": session_id,
             "message": "预算10000，2K游戏，不需要显示器，1TB，静音，amd",
             "enthusiasm_level": "standard",
-            "build_data_mode": "newegg",
+            "build_data_mode": "jd",  # 使用京东数据源，有 AMD 和 Intel CPU
         },
     )
     assert first.status_code == 200
@@ -61,7 +61,7 @@ def test_lowercase_intel_never_falls_back_to_amd_in_same_session():
             "session_id": session_id,
             "message": "intel",
             "enthusiasm_level": "standard",
-            "build_data_mode": "newegg",
+            "build_data_mode": "jd",  # 使用京东数据源，有 AMD 和 Intel CPU
         },
     )
     assert second.status_code == 200
@@ -69,4 +69,4 @@ def test_lowercase_intel_never_falls_back_to_amd_in_same_session():
     assert second_payload["requirements"]["cpu_preference"] == "Intel"
     cpu = second_payload["build"]["cpu"]
     assert cpu is not None
-    assert cpu["brand"].lower() == "intel"
+    assert cpu["brand"].lower() in ("intel", "英特尔")

@@ -151,7 +151,7 @@ async function sendMessage(text) {
         message: text,
         interaction_mode: interactionMode?.value || "chat",
         enthusiasm_level: enthusiasmLevel?.value || "standard",
-        build_data_mode: buildDataMode?.value || "newegg",
+        build_data_mode: buildDataMode?.value || "jd",
       }),
     });
 
@@ -191,7 +191,7 @@ setBuild(EMPTY_BUILD);
   estimated_performance: "-",
   build_data_source: "csv(jd+newegg)",
   build_data_version: "latest",
-  build_data_mode: buildDataMode?.value || "newegg",
+  build_data_mode: buildDataMode?.value || "jd",
   session_model_provider: "-",
   turn_model_provider: "-",
   response_mode: "fallback",
