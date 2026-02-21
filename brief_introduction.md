@@ -159,3 +159,29 @@ RigForge 是一个 PC 装机智能推荐系统，基于 LangGraph 状态机实�
 技术栈包括 FastAPI、LangChain、LangGraph、SQLite、Redis。核心亮点是使用状态机而非 ReAct 框架，将 LLM 调用次数从 3-5 次降至 1-2 次，响应时间减少 60%，成本降低 70%。
 
 项目支持多数据源（京东、Newegg），实现了会话管理、兼容性检查、功耗估算等功能。
+
+
+----
+
+
+
+### 状态流转总览 （Mermaid 流程图）
+
+每一次会话，都是这样的流转过程
+
+```mermaid
+
+flowchart TB
+    START([用户输入]) --> COLLECT[collect_requirements<br/>需求收集节点]
+    
+    COLLECT -->|route=ask_more| FOLLOW_UP[generate_follow_up<br/>追问生成节点]
+    COLLECT -->|route=recommend| RECOMMEND[recommend_build<br/>推荐生成节点]
+    
+    FOLLOW_UP --> COMPOSE[compose_reply<br/>回复组装节点]
+    
+    RECOMMEND --> VALIDATE[validate_build<br/>兼容性验证节点]
+    VALIDATE --> COMPOSE
+    
+    COMPOSE --> END([返回用户])
+
+```
