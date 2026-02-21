@@ -147,12 +147,6 @@ class Toolset:
                 配件字典列表，每个字典包含配件的详细信息
                 List of part dictionaries, each containing detailed part information
             """
-            print(f"[DEBUG] search_parts called:")
-            print(f"  category: {category}")
-            print(f"  budget_max: {budget_max}")
-            print(f"  prefer_brands: {prefer_brands}")
-            print(f"  exclude_brands: {exclude_brands}")
-            
             prefer_brands = prefer_brands or []
             exclude_brands = exclude_brands or []
 
@@ -171,15 +165,15 @@ class Toolset:
                     return False
                 part_brand = _norm(part.brand)
                 part_name = _norm(part.name)
-                
+
                 # 直接匹配 - Direct match
                 if part_brand == brand_norm:
                     return True
-                
+
                 # 名称中包含品牌 - Brand in name
                 if f" {brand_norm} " in f" {part_name} ":
                     return True
-                
+
                 # 通过别名映射匹配 - Match via brand aliases
                 for canonical, aliases in BRAND_ALIASES.items():
                     if brand_norm in aliases or brand_norm == canonical:
@@ -189,17 +183,15 @@ class Toolset:
                         for alias in aliases:
                             if f" {alias} " in f" {part_name} ":
                                 return True
-                
+
                 return False
 
             prefer_brands_norm = {_norm(b) for b in prefer_brands if b and b.strip()}
             exclude_brands_norm = {_norm(b) for b in exclude_brands if b and b.strip()}
-            
+
             # 步骤 1: 从仓库获取指定类别的所有配件 - Step 1: Get all parts in category from repository
-            print(f"[DEBUG] Getting parts by category: {category}")
             all_parts = repo.by_category(category)
-            print(f"[DEBUG] Total parts in category: {len(all_parts)}")
-            
+
             # 步骤 2-3: 过滤价格和品牌 - Step 2-3: Filter by price and brand
             candidates = [
                 p
@@ -207,14 +199,7 @@ class Toolset:
                 if p.price <= budget_max
                 and not any(_brand_matches(p, blocked) for blocked in exclude_brands_norm)
             ]
-            print(f"[DEBUG] Candidates after filtering: {len(candidates)}")
-            
-            # 调试：显示过滤后的CPU列表（前10个）
-            if category == "cpu":
-                print(f"[DEBUG] 过滤后的CPU列表（前10个）:")
-                for i, p in enumerate(candidates[:10]):
-                    print(f"  #{i+1}: {p.brand} {p.name} - {p.price}元")
-            
+
             # 步骤 4-5: 过滤和排序 - Step 4-5: Filter and Sort
             if prefer_brands_norm:
                 # 只保留偏好品牌的配件 - Only keep preferred brand parts
@@ -222,17 +207,14 @@ class Toolset:
                     p for p in candidates
                     if any(_brand_matches(p, preferred) for preferred in prefer_brands_norm)
                 ]
-                print(f"[DEBUG] After brand filter: {len(candidates)} items")
                 # 按性能评分和价格排序 - Sort by performance score and price
                 candidates.sort(key=lambda p: (-p.score, p.price))
             else:
                 # 按性能评分和价格排序 - Sort by performance score and price
                 candidates.sort(key=lambda p: (-p.score, p.price))
-            
+
             # 步骤 6: 返回前 20 个 - Step 6: Return top 20
-            result = [c.model_dump() for c in candidates[:20]]
-            print(f"[DEBUG] Returning {len(result)} results")
-            return result
+            return [c.model_dump() for c in candidates[:20]]
 
         @tool("estimate_power")
         def estimate_power(parts: List[str]) -> int:
@@ -373,12 +355,6 @@ class Toolset:
                 推荐上下文字典，包含预算范围、分辨率和权重配置
                 Recommendation context dictionary, including budget range, resolution, and weight configuration
             """
-            print(f"[DEBUG] recommendation_context called:")
-            print(f"  budget_min: {budget_min}")
-            print(f"  budget_max: {budget_max}")
-            print(f"  use_case: {use_case}")
-            print(f"  resolution: {resolution}")
-            
             # 根据用途调整权重 - Adjust weights based on use case
             gpu_weight = 0.35
             cpu_weight = 0.25
@@ -386,15 +362,13 @@ class Toolset:
                 gpu_weight += 0.15
             if "video_editing" in use_case or "ai" in use_case:
                 cpu_weight += 0.1
-            target = {
+            return {
                 "budget_min": budget_min,
                 "budget_max": budget_max,
                 "resolution": resolution,
                 "gpu_weight": round(gpu_weight, 2),
                 "cpu_weight": round(cpu_weight, 2),
             }
-            print(f"[DEBUG] recommendation_context result: {target}")
-            return target
 
         return {
             "search_parts": search_parts,
@@ -438,9 +412,6 @@ def pick_build_from_candidates(
         完整的配置方案
         Complete build plan
     """
-    print(f"[DEBUG] pick_build_from_candidates called")
-    print(f"[DEBUG] Budget max: {req.budget_max}")
-    
     # 步骤 1: 分配预算 - Step 1: Allocate budget
     budgets = {
         "cpu": int(req.budget_max * 0.2),
@@ -452,18 +423,16 @@ def pick_build_from_candidates(
         "case": int(req.budget_max * 0.06),
         "cooler": int(req.budget_max * 0.05),
     }
-    
-    print(f"[DEBUG] Budgets allocated: {budgets}")
 
     build = BuildPlan()
 
     def choose(category: str, predicate=None, strict_predicate: bool = False, is_fallback: bool = False) -> Part | None:
         """
         选择配件 - Choose Part
-        
+
         根据类别、预算和约束条件选择最佳配件。
         Select the best part based on category, budget, and constraints.
-        
+
         参数 Parameters:
             category: 配件类别
                       Part category
@@ -473,13 +442,11 @@ def pick_build_from_candidates(
                              Whether to strictly apply predicate, if True and no match then return None
             is_fallback: 是否为兜底模式，如果是则忽略品牌偏好，选择最便宜的
                          Whether this is fallback mode, if True ignore brand preferences and choose cheapest
-        
+
         返回 Returns:
             选中的配件，如果没有找到则返回 None
             Selected part, or None if not found
         """
-        print(f"[DEBUG] choose called for category: {category}")
-        
         def _norm(value: str) -> str:
             return value.strip().lower()
 
@@ -497,8 +464,6 @@ def pick_build_from_candidates(
             return any(_brand_matches(item, preferred) for item in items_local)
 
         # 兜底模式处理 - Fallback mode handling
-        # 如果是兜底模式，忽略品牌偏好，选择最便宜的
-        # If fallback mode, ignore brand preferences and choose cheapest
         if is_fallback:
             category_prefer_brands = []
             category_exclude_brands = []
@@ -507,18 +472,15 @@ def pick_build_from_candidates(
             category_prefer_brands = list(req.prefer_brands)
             category_exclude_brands = list(req.brand_blacklist)
             cpu_preference = (req.cpu_preference or "").strip()
-            
+
             # CPU 品牌偏好处理 - CPU brand preference handling
             if category == "cpu" and cpu_preference:
-                # 显式的 CPU 偏好应该比通用品牌历史更强
-                # Explicit CPU preference should be stronger than generic brand history.
                 category_prefer_brands = [cpu_preference]
                 category_exclude_brands = [
                     b for b in category_exclude_brands if b.strip().lower() != cpu_preference.lower()
                 ]
-        
+
         # 第一次搜索：使用类别预算 - First search: use category budget
-        print(f"[DEBUG] Calling search_parts for {category}...")
         raw = search_parts_tool.invoke(
             {
                 "category": category,
@@ -527,8 +489,7 @@ def pick_build_from_candidates(
                 "exclude_brands": category_exclude_brands,
             }
         )
-        print(f"[DEBUG] First search for {category} returned {len(raw) if raw else 0} items")
-        
+
         # 判断是否需要扩展预算 - Check if budget expansion is needed
         should_expand_budget = (
             category == "cpu"
@@ -538,7 +499,6 @@ def pick_build_from_candidates(
         )
         if not raw or should_expand_budget:
             # 第二次搜索：扩展预算 - Second search: expand budget
-            print(f"[DEBUG] Expanding budget for {category}...")
             raw = search_parts_tool.invoke(
                 {
                     "category": category,
@@ -547,75 +507,45 @@ def pick_build_from_candidates(
                     "exclude_brands": category_exclude_brands,
                 }
             )
-            print(f"[DEBUG] Second search for {category} returned {len(raw) if raw else 0} items")
         if not raw:
-            print(f"[DEBUG] No items found for {category}")
             return None
         items = [Part.model_validate(item) for item in raw]
-        
+
         # CPU 品牌匹配 - CPU brand matching
         if category == "cpu" and cpu_preference:
-            print(f"[DEBUG] CPU品牌匹配: 偏好='{cpu_preference}', 总共{len(items)}个CPU")
-            # 调试：显示所有CPU的品牌
-            for i, item in enumerate(items[:5]):
-                print(f"[DEBUG] CPU #{i+1}: brand='{item.brand}', name='{item.name}'")
             matched_cpu_brand = [
                 item for item in items if _brand_matches(item, cpu_preference)
             ]
-            print(f"[DEBUG] 匹配的CPU数量: {len(matched_cpu_brand)}")
             if matched_cpu_brand:
                 items = matched_cpu_brand
-                print(f"[DEBUG] 使用匹配的CPU列表")
             else:
-                # 不要静默违反显式的 CPU 品牌偏好
-                # Do not silently violate an explicit CPU brand preference.
-                print(f"[DEBUG] 没有找到匹配'{cpu_preference}'品牌的CPU，返回None")
                 return None
-        
+
         # 根据优先级排序 - Sort by priority
         if req.priority == "budget" or is_fallback:
             items.sort(key=lambda p: p.price)
         elif req.priority == "performance":
             items.sort(key=lambda p: (-p.score, p.price))
-        
-        print(f"[DEBUG] Items after sorting: {len(items)}")
-        
+
         # 应用谓词过滤 - Apply predicate filtering
         if predicate:
-            print(f"[DEBUG] Applying predicate for {category}...")
             for item in items:
                 if predicate(item):
-                    print(f"[DEBUG] Found matching item: {item.name}")
                     return item
             if strict_predicate:
-                print(f"[DEBUG] No matching item found with strict predicate for {category}")
                 return None
-            print(f"[DEBUG] No matching item found, returning first item for {category}")
             return items[0]
-        
-        print(f"[DEBUG] Returning first item for {category}: {items[0].name if items else 'None'}")
+
         return items[0]
 
     # 步骤 2: 依次选择各类配件 - Step 2: Choose parts in order
-    
+
     # 选择 CPU - Choose CPU
-    print(f"[DEBUG] 开始选择CPU，CPU偏好: '{req.cpu_preference}'")
-    print(f"[DEBUG] 品牌偏好: {req.prefer_brands}")
     build.cpu = choose("cpu")
-    if build.cpu:
-        print(f"[DEBUG] 选择的CPU: {build.cpu.brand} {build.cpu.name}")
-    else:
-        print(f"[DEBUG] CPU选择失败，返回None")
-    
+
     # CPU兜底机制：如果CPU没找到，选择最便宜的
-    # CPU fallback: if no CPU found, choose the cheapest
     if build.cpu is None:
-        print(f"[DEBUG] CPU not found, using fallback to cheapest CPU")
         build.cpu = choose("cpu", is_fallback=True)
-        if build.cpu:
-            print(f"[DEBUG] 兜底CPU: {build.cpu.brand} {build.cpu.name}")
-        else:
-            print(f"[DEBUG] 兜底CPU也失败了！")
     
     # 选择主板（必须与 CPU 插槽匹配）- Choose motherboard (must match CPU socket)
     # 如果预算内找不到匹配的主板，扩大预算重试
@@ -627,28 +557,19 @@ def pick_build_from_candidates(
     )
     
     # 如果主板没找到，扩大预算重试
-    # If motherboard not found, expand budget and retry
     if build.motherboard is None and build.cpu:
-        print(f"[DEBUG] Motherboard not found within budget, expanding budget...")
         original_budget = budgets.get("motherboard", 0)
         expanded_budget = max(original_budget * 2, req.budget_max)
-        
-        # 临时修改预算
         budgets["motherboard"] = expanded_budget
-        
         build.motherboard = choose(
             "motherboard",
             predicate=(lambda p: build.cpu is not None and p.socket == build.cpu.socket),
             strict_predicate=True,
         )
-        
-        # 恢复预算
         budgets["motherboard"] = original_budget
-    
-    # 主板兜底机制：如果还是没找到，选择最便宜的主板（忽略插槽匹配）
-    # Motherboard fallback: if still not found, choose cheapest motherboard (ignore socket match)
+
+    # 主板兜底机制：如果还是没找到，选择最便宜的主板
     if build.motherboard is None:
-        print(f"[DEBUG] Motherboard still not found, using fallback to cheapest motherboard")
         build.motherboard = choose("motherboard", is_fallback=True)
     
     # 选择内存（必须与主板内存类型匹配，严格匹配）- Choose memory (must match motherboard memory type, strict match)
@@ -665,14 +586,10 @@ def pick_build_from_candidates(
         )
         
         # 内存兜底机制：如果没找到匹配的内存，扩大预算重试
-        # Memory fallback: if no matching memory found, expand budget and retry
         if build.memory is None:
-            print(f"[DEBUG] Memory not found within budget, expanding budget...")
             original_budget = budgets.get("memory", 0)
             expanded_budget = max(original_budget * 2, req.budget_max)
-            
             budgets["memory"] = expanded_budget
-            
             build.memory = choose(
                 "memory",
                 predicate=(
@@ -681,41 +598,30 @@ def pick_build_from_candidates(
                 ),
                 strict_predicate=True,
             )
-            
             budgets["memory"] = original_budget
-        
-        # 内存兜底机制：如果还是没找到，选择最便宜的内存（忽略内存类型匹配）
-        # Memory fallback: if still not found, choose cheapest memory (ignore memory type match)
+
+        # 内存兜底机制：如果还是没找到，选择最便宜的内存
         if build.memory is None:
-            print(f"[DEBUG] Memory still not found, using fallback to cheapest memory")
             build.memory = choose("memory", is_fallback=True)
     else:
         # 主板没有指定内存类型，选择最佳内存（优先DDR5）
-        # Motherboard doesn't specify memory type, choose best memory (prefer DDR5)
         build.memory = choose("memory")
-        
+
         # 内存兜底机制：如果没找到，选择最便宜的
-        # Memory fallback: if not found, choose cheapest
         if build.memory is None:
-            print(f"[DEBUG] Memory not found, using fallback to cheapest memory")
             build.memory = choose("memory", is_fallback=True)
     
     # 选择存储 - Choose storage
     build.storage = choose("storage")
     
     # 存储兜底机制：如果没找到，选择最便宜的
-    # Storage fallback: if not found, choose cheapest
     if build.storage is None:
-        print(f"[DEBUG] Storage not found, using fallback to cheapest storage")
         build.storage = choose("storage", is_fallback=True)
-    
+
     # 选择显卡 - Choose GPU
     build.gpu = choose("gpu")
-    
+
     # 显卡兜底机制：如果没找到，可以为空（低端配置）
-    # GPU fallback: if not found, can be None (low-end configuration)
-    if build.gpu is None:
-        print(f"[DEBUG] GPU not found, leaving as None (low-end configuration)")
 
     # 计算目标电源功率 - Calculate target PSU wattage
     estimated_draw = 0
@@ -731,24 +637,15 @@ def pick_build_from_candidates(
     build.psu = choose("psu", predicate=(lambda p: p.watt >= target_psu))
     
     # 如果电源没找到，扩大预算重试
-    # If PSU not found, expand budget and retry
     if build.psu is None:
-        print(f"[DEBUG] PSU not found within budget, expanding budget...")
         original_budget = budgets.get("psu", 0)
         expanded_budget = max(original_budget * 2, req.budget_max)
-        
-        # 临时修改预算
         budgets["psu"] = expanded_budget
-        
         build.psu = choose("psu", predicate=(lambda p: p.watt >= target_psu))
-        
-        # 恢复预算
         budgets["psu"] = original_budget
-    
-    # 电源兜底机制：如果还是没找到，选择最便宜的电源（忽略功率要求）
-    # PSU fallback: if still not found, choose cheapest PSU (ignore wattage requirement)
+
+    # 电源兜底机制：如果还是没找到，选择最便宜的电源
     if build.psu is None:
-        print(f"[DEBUG] PSU still not found, using fallback to cheapest PSU")
         build.psu = choose("psu", is_fallback=True)
     
     # 选择机箱（必须与主板规格匹配，且能容纳显卡）- Choose case (must match motherboard form factor and fit GPU)
@@ -764,14 +661,10 @@ def pick_build_from_candidates(
     )
     
     # 机箱兜底机制：如果没找到，扩大预算重试
-    # Case fallback: if not found, expand budget and retry
     if build.case is None:
-        print(f"[DEBUG] Case not found within budget, expanding budget...")
         original_budget = budgets.get("case", 0)
         expanded_budget = max(original_budget * 2, req.budget_max)
-        
         budgets["case"] = expanded_budget
-        
         build.case = choose(
             "case",
             predicate=(
@@ -782,13 +675,10 @@ def pick_build_from_candidates(
                 and (build.gpu is None or p.length_mm >= build.gpu.length_mm)
             ),
         )
-        
         budgets["case"] = original_budget
-    
-    # 机箱兜底机制：如果还是没找到，选择最便宜的机箱（忽略兼容性要求）
-    # Case fallback: if still not found, choose cheapest case (ignore compatibility requirements)
+
+    # 机箱兜底机制：如果还是没找到，选择最便宜的机箱
     if build.case is None:
-        print(f"[DEBUG] Case still not found, using fallback to cheapest case")
         build.case = choose("case", is_fallback=True)
     
     # 选择散热器（高度必须适合机箱）- Choose cooler (height must fit case)
@@ -800,27 +690,18 @@ def pick_build_from_candidates(
     )
     
     # 如果散热器没找到，扩大预算重试
-    # If cooler not found, expand budget and retry
     if build.cooler is None:
-        print(f"[DEBUG] Cooler not found within budget, expanding budget...")
         original_budget = budgets.get("cooler", 0)
         expanded_budget = max(original_budget * 2, req.budget_max)
-        
-        # 临时修改预算
         budgets["cooler"] = expanded_budget
-        
         build.cooler = choose(
             "cooler",
             predicate=(lambda p: build.case is None or p.height_mm <= build.case.height_mm),
         )
-        
-        # 恢复预算
         budgets["cooler"] = original_budget
-    
-    # 散热器兜底机制：如果还是没找到，选择最便宜的散热器（忽略高度要求）
-    # Cooler fallback: if still not found, choose cheapest cooler (ignore height requirement)
+
+    # 散热器兜底机制：如果还是没找到，选择最便宜的散热器
     if build.cooler is None:
-        print(f"[DEBUG] Cooler still not found, using fallback to cheapest cooler")
         build.cooler = choose("cooler", is_fallback=True)
 
     return build
