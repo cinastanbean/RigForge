@@ -612,9 +612,50 @@ def pick_build_from_candidates(
             build.memory = choose("memory", is_fallback=True)
     
     # 选择存储 - Choose storage
-    build.storage = choose("storage")
+    # 辅助函数：判断是否为 SSD（排除机械硬盘）
+    def _is_ssd(part: Part) -> bool:
+        """判断配件是否为 SSD（非机械硬盘）"""
+        name_lower = part.name.lower()
+        # 排除机械硬盘
+        if "机械" in part.name or "hdd" in name_lower:
+            return False
+        # SSD 特征：包含 SSD、NVMe、SATA 等关键词，或名称中不包含机械硬盘关键词
+        return True
     
-    # 存储兜底机制：如果没找到，选择最便宜的
+    # 如果用户指定了存储容量，优先选择符合容量需求的 SSD
+    if req.storage_set and req.storage_target_gb and req.storage_target_gb > 0:
+        build.storage = choose(
+            "storage",
+            predicate=lambda p: _is_ssd(p) and p.capacity_gb >= req.storage_target_gb,
+            strict_predicate=True,
+        )
+        # 如果预算内找不到符合容量的 SSD，尝试不限制容量
+        if build.storage is None:
+            build.storage = choose(
+                "storage",
+                predicate=lambda p: _is_ssd(p) and p.capacity_gb >= req.storage_target_gb,
+                strict_predicate=False,
+            )
+        # 如果还是找不到，扩大预算重试
+        if build.storage is None:
+            original_budget = budgets.get("storage", 0)
+            expanded_budget = max(original_budget * 2, req.budget_max)
+            budgets["storage"] = expanded_budget
+            build.storage = choose(
+                "storage",
+                predicate=lambda p: _is_ssd(p) and p.capacity_gb >= req.storage_target_gb,
+                strict_predicate=True,
+            )
+            budgets["storage"] = original_budget
+    else:
+        # 默认优先选择 SSD
+        build.storage = choose(
+            "storage",
+            predicate=_is_ssd,
+            strict_predicate=False,
+        )
+    
+    # 存储兜底机制：如果没找到，选择最便宜的（可能是机械硬盘）
     if build.storage is None:
         build.storage = choose("storage", is_fallback=True)
 

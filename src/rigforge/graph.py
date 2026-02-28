@@ -484,7 +484,7 @@ class RequirementExtractor:
         except Exception as e:
             return self._extract_with_rules(text, current)
 
-    def extract_and_reply(self, text: str, current: UserRequirements, llm=None, follow_up_questions: List[str] = None, enthusiasm_level: str = "standard") -> RequirementUpdateWithReply:
+    def extract_and_reply(self, text: str, current: UserRequirements, llm=None, follow_up_questions: List[str] = None, enthusiasm_level: str = "standard", last_assistant_reply: Optional[str] = None) -> RequirementUpdateWithReply:
         if llm is None:
             update = self._extract_with_rules(text, current)
             reply = self._generate_fallback_reply(update, follow_up_questions, enthusiasm_level)
@@ -514,6 +514,7 @@ class RequirementExtractor:
                     "- 预算范围 (budget_min, budget_max): 整数\n"
                     "- 用途 (use_case): 列表，例如 [\"gaming\"] 或 [\"video_editing\", \"ai\"] 或 [\"office\"]\n"
                     "- 分辨率 (resolution): 字符串，例如 \"1080p\" 或 \"1440p\" 或 \"4k\"\n"
+                    "- 游戏名称 (game_titles): 列表，例如 [\"LOL\", \"DOTA2\"]（当用途包含 gaming 时）\n"
                     "- CPU偏好 (cpu_preference): 字符串，例如 \"Intel\" 或 \"AMD\"\n"
                     "- 显卡偏好 (gpu_preference): 字符串，例如 \"NVIDIA\" 或 \"AMD\" 或具体型号\n"
                     "- 内存容量 (memory_gb): 整数\n"
@@ -563,7 +564,7 @@ class RequirementExtractor:
                 ),
                 (
                     "human",
-                    "已收集信息: {collected}\n用户本轮输入: {text}",
+                    "已收集信息: {collected}\n上一轮助手提问: {last_question}\n用户本轮输入: {text}",
                 ),
             ]
         )
@@ -575,6 +576,7 @@ class RequirementExtractor:
                 "collected": collected_summary,
                 "text": text,
                 "follow_style": follow_style,
+                "last_question": last_assistant_reply or "(这是第一轮对话)",
             }
 
             result = invoke_with_turn_timeout(
@@ -727,7 +729,25 @@ class RequirementExtractor:
                 update.cpu_preference = "Intel"
             elif "amd" in lower:
                 update.cpu_preference = "AMD"
-        games = re.findall(r"(cs2|valorant|lol|dota2|apex|pubg|原神|黑神话)", lower)
+        games = []
+        # 固定游戏名称匹配
+        fixed_games = re.findall(r"(cs2|valorant|lol|dota2|apex|pubg|原神|黑神话)", lower)
+        games.extend(fixed_games)
+        
+        # 游戏相关关键词匹配
+        game_keywords = ["英雄联盟", "守望先锋", "魔兽世界", "星际争霸", "炉石传说", 
+                        "王者荣耀", "和平精英", "穿越火线", "使命召唤", "战地",
+                        "赛博朋克", "艾尔登法环", "塞尔达", "马里奥", "动物森友会"]
+        for game in game_keywords:
+            if game in text:
+                games.append(game)
+        
+        # 通用游戏表达匹配
+        if any(keyword in lower for keyword in ["游戏", "玩", "电竞", "网游", "单机", "steam", "epic"]):
+            # 如果没有具体游戏名称，添加通用游戏标签
+            if not games:
+                games.append("游戏")
+        
         if games:
             update.game_titles = sorted(set(games))
         if any(k in text for k in ["便宜点", "省点", "省钱", "降点预算", "预算太高"]):
@@ -1030,9 +1050,15 @@ class RigForgeGraph:
             user_input, 
             current, 
             llm=llm, 
-            enthusiasm_level=enthusiasm_level
+            enthusiasm_level=enthusiasm_level,
+            last_assistant_reply=last_assistant_reply
         )
         tracker.end()
+        
+        # 应用上下文推断，处理简短回答（如 "10000-12000" 回答预算问题）
+        result.requirement_update = self._apply_contextual_short_answer(
+            result.requirement_update, user_input, last_assistant_reply
+        )
         
         tracker.start("merge_requirements")
         merged = merge_requirements(current, result.requirement_update)
@@ -1045,21 +1071,35 @@ class RigForgeGraph:
         rule_based_route = self._rule_based_route_decision(merged, user_input, turn_number, max_turns)
         llm_based_route = "recommend" if not result.should_continue else "ask_more"
         
-        # LLM 判断优先级更高，只有当 LLM 判断为 "recommend" 时才使用规则引擎的判断
-        # 这样可以确保 LLM 的对话意图得到尊重
-        route = llm_based_route
-        if llm_based_route == "recommend" and rule_based_route == "recommend":
-            route = "recommend"
-        elif llm_based_route == "recommend" and rule_based_route == "ask_more":
-            # LLM 认为应该结束，但规则引擎认为应该继续提问
-            # 优先使用 LLM 的判断
-            route = "recommend"
-        elif llm_based_route == "ask_more" and rule_based_route == "recommend":
-            # LLM 认为应该继续提问，但规则引擎认为应该结束
-            # 优先使用 LLM 的判断，让对话继续
+        # 安全检查：确保核心信息收集完整
+        # 即使 LLM 认为应该结束，如果核心信息不足，也强制继续提问
+        core_fields_collected = 0
+        if merged.budget_set:
+            core_fields_collected += 1
+        if merged.use_case_set:
+            core_fields_collected += 1
+        if merged.resolution_set:
+            core_fields_collected += 1
+        
+        # 核心信息不足时，强制继续提问
+        if core_fields_collected < 2:
             route = "ask_more"
         else:
-            route = "ask_more"
+            # LLM 判断优先级更高，只有当 LLM 判断为 "recommend" 时才使用规则引擎的判断
+            # 这样可以确保 LLM 的对话意图得到尊重
+            route = llm_based_route
+            if llm_based_route == "recommend" and rule_based_route == "recommend":
+                route = "recommend"
+            elif llm_based_route == "recommend" and rule_based_route == "ask_more":
+                # LLM 认为应该结束，但规则引擎认为应该继续提问
+                # 优先使用 LLM 的判断
+                route = "recommend"
+            elif llm_based_route == "ask_more" and rule_based_route == "recommend":
+                # LLM 认为应该继续提问，但规则引擎认为应该结束
+                # 优先使用 LLM 的判断，让对话继续
+                route = "ask_more"
+            else:
+                route = "ask_more"
         
         tracker.end()
         
@@ -1210,6 +1250,17 @@ class RigForgeGraph:
         high_cooperation = state.get("high_cooperation", False)
         avoid_repeat_field = state.get("avoid_repeat_field")
         existing_response = state.get("response_text", "")
+        user_input = state.get("user_input", "")
+        
+        # 检查用户是否表示不知道
+        dont_know_keywords = ["不知道", "不了解", "不清楚", "没什么", "随便", "都行"]
+        user_doesnt_know = any(keyword in user_input for keyword in dont_know_keywords)
+        
+        # 检查用户输入是否包含游戏相关内容
+        game_related_keywords = ["游戏", "玩", "电竞", "网游", "单机", "steam", "epic", 
+                               "lol", "dota", "cs", "pubg", "apex", "valorant", 
+                               "原神", "黑神话", "守望先锋", "英雄联盟", "使命召唤"]
+        has_game_related_content = any(keyword in user_input for keyword in game_related_keywords)
         
         mapping = {
             "budget": "你的预算范围大概是多少呀？例如 7000-9000 或 10000-12000。",
@@ -1225,7 +1276,7 @@ class RigForgeGraph:
         candidate_keys = list(known_missing_keys)
         if ask_cpu_preference and known_missing_keys:
             candidate_keys.append("cpu_preference")
-        if "gaming" in req.use_case and not req.game_titles:
+        if "gaming" in req.use_case and not req.game_titles and not user_doesnt_know and not has_game_related_content:
             optional_questions.append("你平时主要玩哪些游戏？我会按目标帧率给你分配显卡和 CPU 预算。")
 
         ask_limit = 2 if high_cooperation else 1
@@ -1248,13 +1299,24 @@ class RigForgeGraph:
             questions = optional_questions[:ask_limit]
         
         # 如果没有 missing 字段，根据当前需求推断缺失的关键信息
+        # 注意：必须检查 *_set 标志，而不是值是否存在，因为有默认值
+        # 核心字段：预算、用途、分辨率（必须询问）
+        # 可选字段：CPU、显卡、存储、静音（用户可选是否提供）
         if not questions:
-            if not (req.budget_min or req.budget_max):
+            if not req.budget_set:
                 questions.append(mapping["budget"])
-            elif not req.use_case:
+            elif not req.use_case_set:
                 questions.append(mapping["use_case"])
-            elif not req.resolution:
+            elif not req.resolution_set:
                 questions.append(mapping["resolution"])
+            elif not req.cpu_set:
+                questions.append("你对 CPU 有偏好吗？比如 Intel 还是 AMD？")
+            elif not req.gpu_set:
+                questions.append("显卡方面有要求吗？比如 N卡还是 A卡？")
+            elif not req.storage_set:
+                questions.append("存储容量需要多大？比如 1TB 或 2TB？")
+            elif not req.noise_set:
+                questions.append("对机箱静音有要求吗？")
             else:
                 # 已经有足够信息，应该直接推荐
                 questions.append("看来信息已经足够了，我这就为你生成推荐配置！")
@@ -1894,7 +1956,7 @@ class RigForgeGraph:
             "ok",
             "okay",
         }
-        no_words = {"不要", "不用", "不需要", "否", "不", "no"}
+        no_words = {"不要", "不用", "不需要", "否", "不", "no", "没有", "没", "无"}
         if text not in yes_words and text not in no_words:
             yes_no_matched = False
         else:
@@ -1906,6 +1968,50 @@ class RigForgeGraph:
             if asks_noise:
                 update.need_quiet = text in yes_words
                 update.noise_set = True
+
+        # CPU 偏好推断
+        asks_cpu = "cpu" in last or "intel" in last or "amd" in last
+        if asks_cpu:
+            text_lower = text.lower()
+            if "intel" in text_lower or "i5" in text_lower or "i7" in text_lower or "i9" in text_lower:
+                update.cpu_preference = "Intel"
+                update.cpu_set = True
+            elif "amd" in text_lower or "r5" in text_lower or "r7" in text_lower or "r9" in text_lower or "ryzen" in text_lower:
+                update.cpu_preference = "AMD"
+                update.cpu_set = True
+            elif text_lower in ["无所谓", "都行", "随便", "都可以", "没要求", "没有"]:
+                update.cpu_preference = ""
+                update.cpu_set = True  # 标记为已回答（无偏好）
+
+        # 显卡偏好推断
+        asks_gpu = "显卡" in last or "n卡" in last or "a卡" in last or "nvidia" in last or "gpu" in last
+        if asks_gpu:
+            text_lower = text.lower()
+            if "n" in text_lower or "nvidia" in text_lower or "rtx" in text_lower or "gtx" in text_lower:
+                update.gpu_preference = "NVIDIA"
+                update.gpu_set = True
+            elif "a" in text_lower and ("卡" in last or "显卡" in last or "amd" in text_lower or "rx" in text_lower or "radeon" in text_lower):
+                update.gpu_preference = "AMD"
+                update.gpu_set = True
+            elif text_lower in ["无所谓", "都行", "随便", "都可以", "没要求", "没有"]:
+                update.gpu_preference = ""
+                update.gpu_set = True
+
+        # 存储容量推断
+        asks_storage = "存储" in last or "硬盘" in last or "容量" in last or "tb" in last
+        if asks_storage:
+            text_lower = text.lower()
+            # 匹配数字+TB/T格式，如 "1TB", "2T", "1t"
+            tb_match = re.search(r"(\d+)\s*[tT][bB]?", text_lower)
+            if not tb_match:
+                tb_match = re.search(r"(\d+)\s*t\b", text_lower)
+            if tb_match:
+                gb = int(tb_match.group(1)) * 1000
+                update.storage_target_gb = gb
+                update.storage_set = True
+            elif text_lower in ["无所谓", "都行", "随便", "都可以", "没要求", "没有"]:
+                update.storage_target_gb = 0
+                update.storage_set = True
 
         asks_budget = "预算" in last or "价位" in last or "多少钱" in last
         if asks_budget:
