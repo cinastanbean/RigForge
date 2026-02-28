@@ -951,7 +951,11 @@ class RigForgeGraph:
             self.route_after_collection,
             {"ask_more": "generate_follow_up", "recommend": "recommend_build"},
         )
-        builder.add_edge("generate_follow_up", "compose_reply")
+        builder.add_conditional_edges(
+            "generate_follow_up",
+            lambda state: state.get("route", "ask_more"),
+            {"recommend": "recommend_build", "ask_more": "compose_reply"},
+        )
         builder.add_edge("recommend_build", "validate_build")
         builder.add_edge("validate_build", "compose_reply")
         builder.add_conditional_edges(
@@ -1328,7 +1332,10 @@ class RigForgeGraph:
         else:
             response_text = existing_response
 
-        return {"follow_up_questions": questions, "response_text": response_text}
+        # 检查是否需要生成推荐配置
+        route = "recommend" if "看来信息已经足够了，我这就为你生成推荐配置！" in response_text else "ask_more"
+
+        return {"follow_up_questions": questions, "response_text": response_text, "route": route}
 
     def recommend_build(self, state: GraphState):
         tracker = PerformanceTracker("recommend_build")
