@@ -1956,18 +1956,33 @@ class RigForgeGraph:
             "ok",
             "okay",
         }
-        no_words = {"不要", "不用", "不需要", "否", "不", "no", "没有", "没", "无"}
-        if text not in yes_words and text not in no_words:
-            yes_no_matched = False
-        else:
+        no_words = {"不要", "不用", "不需要", "否", "不", "no", "没有", "没", "无", "没要求", "没有要求", "无要求"}
+        
+        # 检查是否为肯定/否定回答
+        # 1. 完全匹配
+        if text in yes_words:
             yes_no_matched = True
+            is_yes = True
+            is_no = False
+        elif text in no_words:
+            yes_no_matched = True
+            is_yes = False
+            is_no = True
+        # 2. 包含否定词（处理"没有要求"、"没要求"等情况）
+        elif any(word in text for word in no_words if len(word) >= 2):
+            yes_no_matched = True
+            is_yes = False
+            is_no = True
+        else:
+            yes_no_matched = False
+            is_yes = False
+            is_no = False
 
         last = (last_assistant_reply or "").lower()
         asks_noise = ("静音" in last) or ("噪音" in last)
-        if yes_no_matched:
-            if asks_noise:
-                update.need_quiet = text in yes_words
-                update.noise_set = True
+        if yes_no_matched and asks_noise:
+            update.need_quiet = is_yes
+            update.noise_set = True
 
         # CPU 偏好推断
         asks_cpu = "cpu" in last or "intel" in last or "amd" in last
